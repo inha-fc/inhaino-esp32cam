@@ -60,8 +60,8 @@ jobs:
         env:
           BOARD_URL: https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
         run: |
-          arduino-cli --log-level debug core update-index --additional-urls "$BOARD_URL" 2>&1
-          arduino-cli --log-level debug core install espressif:esp32@2.0.17 --additional-urls "$BOARD_URL" 2>&1
+          arduino-cli core update-index --additional-urls "$BOARD_URL"
+          arduino-cli core install esp32:esp32 --additional-urls "$BOARD_URL"
 
       - name: Compile sketch
         env:
