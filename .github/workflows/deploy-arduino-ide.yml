@@ -1,0 +1,71 @@
+name: Deploy Arduino IDE branch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'CameraWebServer/**'
+      - 'index/**'
+      - 'Scripts/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rebuild camera_index.h from index/ sources
+        run: ./Scripts/pack_html.sh
+
+      - name: Push to arduino-ide branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          MAIN_SHA=$(git rev-parse --short HEAD)
+
+          # 빌드된 스케치 폴더 백업
+          cp -rp CameraWebServer /tmp/sketch
+
+          # arduino-ide 브랜치 체크아웃 (없으면 orphan 생성)
+          git fetch origin arduino-ide 2>/dev/null \
+            && git checkout arduino-ide \
+            || git checkout --orphan arduino-ide
+
+          # 트리 초기화
+          git rm -rf . --quiet 2>/dev/null || true
+
+          # 스케치 파일 배치
+          cp -r /tmp/sketch/. CameraWebServer/
+
+          # 브랜치 전용 README
+          cat > README.md << EOF
+          # CameraWebServer — Arduino IDE branch
+
+          > **이 브랜치는 자동 생성됩니다.** \`main\` 브랜치를 직접 편집하세요.
+
+          \`main@${MAIN_SHA}\` 에서 자동 배포되었습니다.
+
+          ## 사용 방법
+
+          Arduino IDE에서 \`CameraWebServer/CameraWebServer.ino\` 를 열면 바로 사용할 수 있습니다.
+
+          \`\`\`sh
+          git clone -b arduino-ide https://github.com/inha-fc/inhaino-esp32cam.git
+          \`\`\`
+          EOF
+
+          git add .
+
+          if git diff --cached --quiet; then
+            echo "No changes — skipping deploy."
+          else
+            git commit -m "build: sync from main@${MAIN_SHA}"
+            git push origin arduino-ide
+          fi
