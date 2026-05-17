@@ -22,6 +22,8 @@
 #include "sdkconfig.h"
 #include "camera_index.h"
 #include "board_config.h"
+#include "secrets.h"
+#include "mbedtls/base64.h"
 
 #if defined(ARDUINO_ARCH_ESP32) && defined(CONFIG_ARDUHAL_ESP_LOG)
 #include "esp32-hal-log.h"
@@ -102,7 +104,36 @@ void enable_led(bool en) {  // Turn LED On or Off
 }
 #endif
 
+static bool check_auth(httpd_req_t *req) {
+  char auth_header[128] = {0};
+  if (httpd_req_get_hdr_value_str(req, "Authorization", auth_header, sizeof(auth_header)) != ESP_OK) {
+    return false;
+  }
+  if (strncmp(auth_header, "Basic ", 6) != 0) {
+    return false;
+  }
+  unsigned char decoded[64] = {0};
+  size_t out_len = 0;
+  if (mbedtls_base64_decode(decoded, sizeof(decoded), &out_len,
+      (const unsigned char *)(auth_header + 6), strlen(auth_header + 6)) != 0) {
+    return false;
+  }
+  decoded[out_len] = '\0';
+  char expected[64];
+  snprintf(expected, sizeof(expected), "%s:%s", CAMERA_AUTH_USER, CAMERA_AUTH_PASS);
+  return strcmp((char *)decoded, expected) == 0;
+}
+
+static esp_err_t reject_auth(httpd_req_t *req) {
+  httpd_resp_set_status(req, "401 Unauthorized");
+  httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"ESP32-CAM\"");
+  return httpd_resp_send(req, NULL, 0);
+}
+
 static esp_err_t bmp_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   camera_fb_t *fb = NULL;
   esp_err_t res = ESP_OK;
 #if ARDUHAL_LOG_LEVEL >= ARDUHAL_LOG_LEVEL_INFO
@@ -117,7 +148,6 @@ static esp_err_t bmp_handler(httpd_req_t *req) {
 
   httpd_resp_set_type(req, "image/x-windows-bmp");
   httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.bmp");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
   char ts[32];
   // Cast to uint32_t is safe until year 2106.
@@ -155,6 +185,9 @@ static size_t jpg_encode_stream(void *arg, size_t index, const void *data, size_
 }
 
 static esp_err_t capture_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   camera_fb_t *fb = NULL;
   esp_err_t res = ESP_OK;
 #if ARDUHAL_LOG_LEVEL >= ARDUHAL_LOG_LEVEL_INFO
@@ -178,7 +211,6 @@ static esp_err_t capture_handler(httpd_req_t *req) {
 
   httpd_resp_set_type(req, "image/jpeg");
   httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
   char ts[32];
   // Cast to uint32_t is safe until year 2106.
@@ -323,6 +355,9 @@ static esp_err_t parse_get(httpd_req_t *req, char **obuf) {
 }
 
 static esp_err_t cmd_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   char *buf = NULL;
   char variable[32];
   char value[32];
@@ -410,7 +445,6 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
     return httpd_resp_send_500(req);
   }
 
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, NULL, 0);
 }
 
@@ -419,6 +453,9 @@ static int print_reg(char *p, char *end, sensor_t *s, uint16_t reg, uint32_t mas
 }
 
 static esp_err_t status_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   static char json_response[1024];
 
   sensor_t *s = esp_camera_sensor_get();
@@ -490,11 +527,13 @@ static esp_err_t status_handler(httpd_req_t *req) {
   *p++ = '}';
   *p++ = 0;
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, json_response, strlen(json_response));
 }
 
 static esp_err_t xclk_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   char *buf = NULL;
   char _xclk[32];
 
@@ -517,11 +556,13 @@ static esp_err_t xclk_handler(httpd_req_t *req) {
     return httpd_resp_send_500(req);
   }
 
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, NULL, 0);
 }
 
 static esp_err_t reg_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   char *buf = NULL;
   char _reg[32];
   char _mask[32];
@@ -549,11 +590,13 @@ static esp_err_t reg_handler(httpd_req_t *req) {
     return httpd_resp_send_500(req);
   }
 
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, NULL, 0);
 }
 
 static esp_err_t greg_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   char *buf = NULL;
   char _reg[32];
   char _mask[32];
@@ -579,7 +622,6 @@ static esp_err_t greg_handler(httpd_req_t *req) {
 
   char buffer[20];
   const char *val = itoa(res, buffer, 10);
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, val, strlen(val));
 }
 
@@ -592,6 +634,9 @@ static int parse_get_var(char *buf, const char *key, int def) {
 }
 
 static esp_err_t pll_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   char *buf = NULL;
 
   if (parse_get(req, &buf) != ESP_OK) {
@@ -615,11 +660,13 @@ static esp_err_t pll_handler(httpd_req_t *req) {
     return httpd_resp_send_500(req);
   }
 
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, NULL, 0);
 }
 
 static esp_err_t win_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   char *buf = NULL;
 
   if (parse_get(req, &buf) != ESP_OK) {
@@ -650,11 +697,13 @@ static esp_err_t win_handler(httpd_req_t *req) {
     return httpd_resp_send_500(req);
   }
 
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, NULL, 0);
 }
 
 static esp_err_t index_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   httpd_resp_set_type(req, "text/html");
   httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
   sensor_t *s = esp_camera_sensor_get();
