@@ -35,8 +35,9 @@ jobs:
           cp -rp CameraWebServer /tmp/sketch
 
           # arduino-ide 브랜치 체크아웃 (없으면 orphan 생성)
+          # pack_html.sh 가 수정한 파일이 있으므로 -f 로 강제 체크아웃
           git fetch origin arduino-ide 2>/dev/null \
-            && git checkout arduino-ide \
+            && git checkout -f arduino-ide \
             || git checkout --orphan arduino-ide
 
           # 트리 초기화
