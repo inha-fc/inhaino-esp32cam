@@ -1,1 +1,5 @@
-secrets.h
+CameraWebServer/secrets.h
+Scripts/index_ov2640.html
+Scripts/index_ov3660.html
+Scripts/index_ov5640.html
+Scripts/index.html
