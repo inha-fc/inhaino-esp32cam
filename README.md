@@ -21,9 +21,9 @@ ESP32-CAM 기반의 Wi-Fi 카메라 웹 서버 프로젝트입니다.
 
 | 보드 | PSRAM |
 |---|:---:|
-| ESP-EYE *(기본값)* | ✓ |
+| ESP-EYE | ✓ |
 | ESP32-S3 EYE | ✓ |
-| AI Thinker ESP32-CAM | ✓ |
+| AI Thinker ESP32-CAM *(기본값)* | ✓ |
 | M5Stack PSRAM | ✓ |
 | M5Stack Wide | ✓ |
 | WROVER Kit | ✓ |
@@ -83,13 +83,58 @@ git update-index --skip-worktree secrets.h
 
 ### 4. 빌드 및 업로드
 
-Arduino IDE에서 `CameraWebServer.ino`를 열고 보드와 포트를 선택한 뒤 업로드합니다.
+#### 보드 매니저 설치 (최초 1회)
+
+`File → Preferences → Additional boards manager URLs`에 추가:
+
+```
+https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+```
+
+`Tools → Board → Boards Manager`에서 **esp32 by Espressif Systems** 설치.
+
+#### Tools 메뉴 설정
+
+| 항목 | 값 |
+|---|---|
+| **Board** | `ESP32 Wrover Module` |
+| **Upload Speed** | `115200` |
+| **CPU Frequency** | `240MHz (WiFi/BT)` |
+| **Flash Frequency** | `80MHz` |
+| **Flash Mode** | `DIO` |
+| **Flash Size** | `4MB (32Mb)` |
+| **Partition Scheme** | `Huge APP (3MB No OTA/1MB SPIFFS)` |
+| **PSRAM** | `Enabled` |
+| **Port** | 연결된 시리얼 포트 선택 |
+
+> "AI Thinker ESP32-CAM" 보드 항목은 PSRAM 활성화 옵션이 없으므로 `ESP32 Wrover Module`을 사용합니다.
+
+#### 하드웨어 연결 (USB-to-Serial 어댑터 필요)
+
+AI Thinker ESP32-CAM은 전용 USB 포트가 없어 FTDI / CH340 어댑터가 필요합니다.
+
+```
+ESP32-CAM    USB-Serial
+GND      →   GND
+5V       →   5V
+UOR(RX)  →   TX
+UOT(TX)  →   RX
+IO0      →   GND  ← 업로드 모드 진입용
+```
+
+#### 업로드 순서
+
+1. `IO0 → GND` 연결 상태에서 **RST 버튼** 누르기 (부트로더 모드 진입)
+2. Arduino IDE에서 **Upload** 클릭
+3. `Connecting........` 메시지가 뜨면 업로드 진행됨
+4. 업로드 완료 후 `IO0 → GND` 연결 해제
+5. **RST 버튼** 다시 눌러 일반 실행 모드로 재시작
 
 ---
 
 ## Usage
 
-업로드 완료 후 시리얼 모니터(115200 baud)를 열면 IP 주소가 출력됩니다.
+업로드 완료 후 `Tools → Serial Monitor`를 열고 baud rate를 **115200**으로 설정하면 IP 주소가 출력됩니다.
 
 ```
 WiFi connected
