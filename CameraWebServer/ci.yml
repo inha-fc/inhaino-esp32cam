@@ -1,0 +1,14 @@
+fqbn:
+  esp32:
+    - esp32:esp32:esp32:PSRAM=enabled,PartitionScheme=custom,FlashMode=dio
+    - esp32:esp32:esp32:PSRAM=disabled,PartitionScheme=custom,FlashMode=dio
+  esp32s2:
+    - esp32:esp32:esp32s2:PSRAM=enabled,PartitionScheme=custom,FlashMode=dio
+    - esp32:esp32:esp32s2:PSRAM=disabled,PartitionScheme=custom,FlashMode=dio
+  esp32s3:
+    - esp32:esp32:esp32s3:PSRAM=opi,USBMode=default,PartitionScheme=custom,FlashMode=qio
+    - esp32:esp32:esp32s3:PSRAM=enabled,USBMode=default,PartitionScheme=custom,FlashMode=qio
+    - esp32:esp32:esp32s3:PSRAM=disabled,USBMode=default,PartitionScheme=custom,FlashMode=qio
+
+requires:
+  - CONFIG_CAMERA_TASK_STACK_SIZE=[0-9]+
