@@ -26,6 +26,8 @@
 #include "default_cert.h"
 #include "mbedtls/base64.h"
 #include "nvs.h"
+#include <WiFi.h>
+#include <Update.h>
 
 #define TLS_NVS_NS "cam_tls"
 
@@ -808,6 +810,87 @@ static esp_err_t restart_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+static esp_err_t info_handler(httpd_req_t *req) {
+  if (!check_auth(req)) return reject_auth(req);
+  sensor_t *s = esp_camera_sensor_get();
+  char buf[256];
+  snprintf(buf, sizeof(buf),
+    "{\"ip\":\"%s\",\"rssi\":%d,\"uptime_s\":%llu,"
+    "\"heap_free\":%u,\"heap_min\":%u,\"sensor_pid\":\"0x%04X\"}",
+    WiFi.localIP().toString().c_str(),
+    WiFi.RSSI(),
+    (unsigned long long)(esp_timer_get_time() / 1000000ULL),
+    esp_get_free_heap_size(),
+    esp_get_minimum_free_heap_size(),
+    s ? (unsigned)s->id.PID : 0u
+  );
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_send(req, buf, strlen(buf));
+}
+
+static const char UPDATE_HTML[] =
+  "<!DOCTYPE html><meta charset=utf-8>"
+  "<title>OTA Update</title>"
+  "<h2>Firmware Update</h2>"
+  "<input id=f type=file accept=.bin>"
+  "<button onclick=go()>Upload &amp; Update</button>"
+  "<p id=s></p>"
+  "<script>"
+  "async function go(){"
+    "const f=document.getElementById('f').files[0];"
+    "if(!f){alert('Select a .bin file');return;}"
+    "document.getElementById('s').textContent='Uploading… do not close.';"
+    "try{"
+      "const r=await fetch('/update',{method:'POST',body:f,"
+        "headers:{'Content-Type':'application/octet-stream'}});"
+      "const j=await r.json();"
+      "document.getElementById('s').textContent=j.note||j.result;"
+    "}catch(e){document.getElementById('s').textContent='Error: '+e;}"
+  "}"
+  "</script>";
+
+static esp_err_t update_page_handler(httpd_req_t *req) {
+  if (!check_auth(req)) return reject_auth(req);
+  httpd_resp_set_type(req, "text/html");
+  return httpd_resp_send(req, UPDATE_HTML, sizeof(UPDATE_HTML) - 1);
+}
+
+static esp_err_t update_upload_handler(httpd_req_t *req) {
+  if (!check_auth(req)) return reject_auth(req);
+
+  int content_len = req->content_len;
+  if (content_len <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Content-Length required");
+    return ESP_FAIL;
+  }
+  if (!Update.begin((size_t)content_len)) {
+    log_e("OTA begin failed: %s", Update.errorString());
+    return httpd_resp_send_500(req);
+  }
+
+  uint8_t buf[1024];
+  int remaining = content_len;
+  while (remaining > 0) {
+    int chunk = remaining < (int)sizeof(buf) ? remaining : (int)sizeof(buf);
+    int got = httpd_req_recv(req, (char *)buf, chunk);
+    if (got <= 0 || Update.write(buf, got) != (size_t)got) {
+      Update.abort();
+      return httpd_resp_send_500(req);
+    }
+    remaining -= got;
+  }
+  if (!Update.end(true)) {
+    log_e("OTA end failed: %s", Update.errorString());
+    return httpd_resp_send_500(req);
+  }
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, "{\"result\":\"ok\",\"note\":\"restarting\"}", -1);
+  vTaskDelay(500 / portTICK_PERIOD_MS);
+  esp_restart();
+  return ESP_OK;
+}
+
 void startCameraServer() {
   // Load TLS certificate from NVS; fall back to embedded default.
   char *nvs_cert = NULL, *nvs_key = NULL;
@@ -976,6 +1059,15 @@ void startCameraServer() {
   httpd_uri_t restart_uri = {
     .uri = "/restart", .method = HTTP_POST, .handler = restart_handler, .user_ctx = NULL
   };
+  httpd_uri_t info_uri = {
+    .uri = "/info", .method = HTTP_GET, .handler = info_handler, .user_ctx = NULL
+  };
+  httpd_uri_t update_page_uri = {
+    .uri = "/update", .method = HTTP_GET, .handler = update_page_handler, .user_ctx = NULL
+  };
+  httpd_uri_t update_upload_uri = {
+    .uri = "/update", .method = HTTP_POST, .handler = update_upload_handler, .user_ctx = NULL
+  };
 
   ra_filter_init(&ra_filter, 20);
 
@@ -994,6 +1086,9 @@ void startCameraServer() {
     httpd_register_uri_handler(camera_httpd, &cert_uri);
     httpd_register_uri_handler(camera_httpd, &certkey_uri);
     httpd_register_uri_handler(camera_httpd, &restart_uri);
+    httpd_register_uri_handler(camera_httpd, &info_uri);
+    httpd_register_uri_handler(camera_httpd, &update_page_uri);
+    httpd_register_uri_handler(camera_httpd, &update_upload_uri);
   }
 
   if (has_nvs) { free(nvs_cert); free(nvs_key); }

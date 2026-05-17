@@ -1,7 +1,9 @@
 #include <Arduino.h>
 #include "esp_camera.h"
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <PubSubClient.h>
+#include <ESPmDNS.h>
 
 // ===========================
 // Select camera model in board_config.h
@@ -24,7 +26,11 @@ void setupLedFlash();
 #define MQTT_TOPIC_STATUS "cam/" MQTT_CLIENT_ID "/status"
 #define MQTT_TOPIC_ONLINE "cam/" MQTT_CLIENT_ID "/online"
 
-static WiFiClient   mqttNet;
+#if MQTT_TLS
+static WiFiClientSecure mqttNet;
+#else
+static WiFiClient       mqttNet;
+#endif
 static PubSubClient mqtt(mqttNet);
 
 static void mqtt_publish_status() {
@@ -187,7 +193,17 @@ void setup() {
   Serial.print(WiFi.localIP());
   Serial.println("' to connect (accept self-signed cert warning)");
 
+  if (MDNS.begin(MQTT_CLIENT_ID)) {
+    MDNS.addService("https", "tcp", 443);
+    Serial.printf("mDNS: https://%s.local/\n", MQTT_CLIENT_ID);
+  }
+
+#if MQTT_TLS
+  mqttNet.setInsecure();  // encrypts without CA verification
+  mqtt.setServer(MQTT_BROKER, 8883);
+#else
   mqtt.setServer(MQTT_BROKER, MQTT_PORT);
+#endif
   mqtt.setCallback(mqtt_callback);
   mqtt_connect();
 }

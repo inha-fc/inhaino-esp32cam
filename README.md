@@ -34,7 +34,9 @@ git clone -b arduino-ide https://github.com/inha-fc/inhaino-esp32cam.git
 - LED 플래시 지원 (핀 정의 시 자동 활성화)
 - Wi-Fi 인증정보 및 카메라 접속 계정 분리 관리 (`secrets.h`)
 - HTTP Basic Auth 기반 인증 (전체 엔드포인트 보호)
-- REST API (JSON 응답) + MQTT 통신 지원
+- HTTPS (포트 443) + mDNS (`esp32cam-1.local`)
+- REST API (JSON 응답) + MQTT / MQTTS 통신 지원
+- OTA 펌웨어 업데이트 (브라우저에서 `.bin` 업로드)
 - GitHub Actions 멀티 보드 빌드 검증 (ESP32 / S2 / S3, PSRAM on/off)
 - `arduino-ide` 브랜치 자동 배포
 
@@ -264,6 +266,61 @@ git update-index --skip-worktree CameraWebServer/secrets.h
 
 ---
 
+## mDNS
+
+Wi-Fi 연결 후 아래 주소로 IP 없이 접속할 수 있습니다.
+
+```
+https://esp32cam-1.local/
+```
+
+`MQTT_CLIENT_ID`가 mDNS 호스트명으로 사용됩니다. 같은 네트워크의 macOS · Linux · Windows(10 이상)에서 동작합니다.
+
+---
+
+## OTA Firmware Update
+
+펌웨어를 USB 연결 없이 Wi-Fi로 업데이트합니다.
+
+```
+https://192.168.x.x/update
+```
+
+브라우저에서 위 주소에 접속하면 `.bin` 파일 업로드 폼이 표시됩니다.  
+업로드 완료 후 자동으로 재시작됩니다.
+
+**curl 예시**
+
+```sh
+curl -k -u admin:changeme \
+  -X POST --data-binary @firmware.bin \
+  -H "Content-Type: application/octet-stream" \
+  https://192.168.x.x/update
+```
+
+> Arduino IDE에서 `.bin` 파일 생성: `Sketch → Export Compiled Binary`
+
+---
+
+## System Info
+
+```sh
+curl -k -u admin:changeme https://192.168.x.x/info
+```
+
+```json
+{
+  "ip": "192.168.1.42",
+  "rssi": -55,
+  "uptime_s": 3600,
+  "heap_free": 180000,
+  "heap_min": 160000,
+  "sensor_pid": "0x2642"
+}
+```
+
+---
+
 ## HTTPS Setup
 
 ### 1. 인증서 생성 (최초 1회)
@@ -346,6 +403,17 @@ curl -k -u admin:changeme -X POST https://192.168.x.x/restart
 | GET | `/capture` | JPEG 스냅샷 캡처 | image/jpeg |
 | GET | `/stream` | MJPEG 실시간 스트림 (포트 81) | multipart |
 
+**전체 엔드포인트**
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| GET | `/info` | 시스템 정보 (IP, RSSI, 힙, 가동시간) |
+| GET | `/update` | OTA 업데이트 페이지 |
+| POST | `/update` | 펌웨어 바이너리 업로드 (Content-Type: application/octet-stream) |
+| POST | `/cert` | TLS 인증서 PEM 업로드 |
+| POST | `/cert/key` | TLS 개인키 PEM 업로드 |
+| POST | `/restart` | 소프트웨어 재시작 |
+
 **`/control` 변수 목록**
 
 | var | 설명 | 범위 |
@@ -420,6 +488,11 @@ Arduino IDE → `Tools → Manage Libraries` → **PubSubClient** by Nick O'Lear
   "saturation": 0
 }
 ```
+
+### MQTT over TLS (MQTTS)
+
+`secrets.h`에서 `MQTT_TLS 1`로 변경하면 포트 8883으로 암호화 연결합니다.  
+브로커 인증서 검증은 생략하고 암호화만 적용합니다 (사설 브로커 대상).
 
 ### mosquitto 테스트 예시
 
