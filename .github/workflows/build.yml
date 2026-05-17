@@ -12,7 +12,6 @@ on:
       - '.github/workflows/build.yml'
 
 jobs:
-  # ci.yml의 fqbn 목록을 읽어 빌드 매트릭스를 동적으로 생성
   generate-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -52,46 +51,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compile sketch
-        uses: arduino/compile-sketches@v1
-        with:
-          fqbn: ${{ matrix.fqbn }}
-          sketch-paths: CameraWebServer
-          platforms: |
-            - name: espressif:esp32
-              source-url: https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-
-      - name: Check required config (CONFIG_CAMERA_TASK_STACK_SIZE)
+      - name: Install arduino-cli
         run: |
-          python3 - <<'EOF'
-          import yaml, re
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          echo "$HOME/bin" >> $GITHUB_PATH
 
-          with open("CameraWebServer/ci.yml") as f:
-              ci = yaml.safe_load(f)
+      - name: Install espressif:esp32 platform
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls \
+            https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install espressif:esp32
 
-          requires = ci.get("requires", [])
-          if not requires:
-              print("No requirements to check.")
-              exit(0)
-
-          # sdkconfig는 컴파일 캐시 디렉터리에 생성됨
-          import glob, sys
-          sdkconfig_files = glob.glob("/tmp/arduino*/**/sdkconfig", recursive=True)
-
-          if not sdkconfig_files:
-              print("sdkconfig not found, skipping check.")
-              exit(0)
-
-          with open(sdkconfig_files[0]) as f:
-              sdkconfig = f.read()
-
-          failed = False
-          for pattern in requires:
-              if not re.search(pattern, sdkconfig, re.MULTILINE):
-                  print(f"FAIL: required pattern not found: {pattern}")
-                  failed = True
-              else:
-                  print(f"OK: {pattern}")
-
-          sys.exit(1 if failed else 0)
-          EOF
+      - name: Compile sketch
+        run: |
+          arduino-cli compile \
+            --fqbn "${{ matrix.fqbn }}" \
+            --build-property "build.partitions=partitions" \
+            CameraWebServer
