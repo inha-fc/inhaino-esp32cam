@@ -32,7 +32,7 @@ git clone -b arduino-ide https://github.com/inha-fc/inhaino-esp32cam.git
 - 센서 자동 감지 및 전용 UI 제공 (OV2640 / OV3660 / OV5640)
 - PSRAM 유무에 따른 자동 화질 조절
 - LED 플래시 지원 (핀 정의 시 자동 활성화)
-- Wi-Fi 인증정보 분리 관리 (`secrets.h`)
+- Wi-Fi 인증정보 및 카메라 접속 계정 분리 관리 (`secrets.h`)
 - GitHub Actions 멀티 보드 빌드 검증 (ESP32 / S2 / S3, PSRAM on/off)
 - `arduino-ide` 브랜치 자동 배포
 
@@ -242,14 +242,35 @@ push → main
 
 | 파일 | git 추적 | 용도 |
 |---|:---:|---|
-| `CameraWebServer/secrets.h` | 최초 1회 | 실제 Wi-Fi 인증정보 |
+| `CameraWebServer/secrets.h` | 최초 1회 | 실제 Wi-Fi 인증정보 및 카메라 계정 |
 | `CameraWebServer/secrets.h.example` | 항상 | 팀원용 템플릿 |
+
+`secrets.h`에서 Wi-Fi와 카메라 접속 계정을 함께 관리합니다.
+
+```cpp
+#define WIFI_SSID        "your_ssid_here"
+#define WIFI_PASSWORD    "your_password_here"
+#define CAMERA_AUTH_USER "admin"           // 카메라 웹 UI 로그인 ID
+#define CAMERA_AUTH_PASS "changeme"        // 카메라 웹 UI 로그인 PW (강력한 값으로 변경)
+```
 
 초기 커밋 이후 로컬 변경사항이 추적되지 않으려면 아래 명령어를 실행하세요.
 
 ```sh
 git update-index --skip-worktree CameraWebServer/secrets.h
 ```
+
+---
+
+## Security
+
+카메라 웹 서버는 HTTP Basic Authentication으로 보호됩니다.
+
+- 브라우저에서 IP 주소 접속 시 ID/PW 입력 팝업이 표시됩니다.
+- 이후 API 호출(`/control`, `/capture`, `/status` 등)에는 자격증명이 자동으로 포함됩니다.
+- 실시간 스트림(`/stream`, 포트 81)은 브라우저 `<img>` 태그 제한으로 별도 팝업이 뜰 수 있습니다.
+
+> **주의**: `CAMERA_AUTH_PASS`의 기본값 `changeme`은 반드시 변경하세요.
 
 ---
 
