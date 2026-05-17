@@ -1,6 +1,9 @@
 #!/bin/bash
 # Run from repo root: ./Scripts/pack_html.sh
-# Packs all Scripts/index_ov*.html files back into CameraWebServer/camera_index.h
+# Packs index/ov*.html back into CameraWebServer/camera_index.h
+#
+# Supports include directives inside HTML files:
+#   <!-- @include common/style.css -->
 set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -8,32 +11,39 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 python3 - <<EOF
 import re, gzip, os
 
-scripts_dir = "$REPO_ROOT/Scripts"
+index_dir  = "$REPO_ROOT/index"
 header_path = "$REPO_ROOT/CameraWebServer/camera_index.h"
+
+def resolve_includes(html, base_dir):
+    """Replace <!-- @include path --> with file contents."""
+    def replacer(m):
+        path = os.path.join(base_dir, m.group(1).strip())
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    return re.sub(r'<!--\s*@include\s+(.+?)\s*-->', replacer, html)
 
 with open(header_path, "r") as f:
     content = f.read()
 
+# Match each sensor array block
 pattern = re.compile(
-    r'(//File:\s*(\S+),\s*Size:\s*)\d+(\s*\n'
+    r'(//File:\s*(index_(\w+)\.html\.gz),\s*Size:\s*)\d+(\s*\n'
     r'#define\s+(\w+)_len\s+)\d+(\s*\n'
-    r'const unsigned char \4\[\]\s*=\s*\{)[^}]+(\})',
+    r'const unsigned char \5\[\]\s*=\s*\{)[^}]+(\})',
     re.DOTALL
 )
 
-def replacement(match):
-    filename = match.group(2)                       # e.g. index_ov2640.html.gz
-    html_name = filename.replace(".gz", "")         # e.g. index_ov2640.html
-    html_path = os.path.join(scripts_dir, html_name)
-
+def make_replacement(sensor, match):
+    html_path = os.path.join(index_dir, sensor + ".html")
     if not os.path.exists(html_path):
-        print(f"  Skipping {html_name} (not found in Scripts/)")
+        print(f"  Skipping {sensor} (index/{sensor}.html not found)")
         return match.group(0)
 
-    with open(html_path, "rb") as f:
+    with open(html_path, "r", encoding="utf-8") as f:
         html = f.read()
 
-    gz_data = gzip.compress(html, compresslevel=9)
+    html = resolve_includes(html, index_dir)
+    gz_data = gzip.compress(html.encode("utf-8"), compresslevel=9)
 
     hex_lines = []
     for i in range(0, len(gz_data), 26):
@@ -42,16 +52,22 @@ def replacement(match):
     if hex_lines:
         hex_lines[-1] = hex_lines[-1].rstrip(",")
 
-    print(f"  {html_name} ({len(html)} bytes) → {filename} ({len(gz_data)} bytes gz)")
+    gz_size = len(gz_data)
+    print(f"  index/{sensor}.html ({len(html)} bytes) → index_{sensor}.html.gz ({gz_size} bytes gz)")
+
     return (
-        match.group(1) + str(len(gz_data)) +
-        match.group(3) + str(len(gz_data)) +
-        match.group(5) + "\n" +
+        match.group(1) + str(gz_size) +
+        match.group(4) + str(gz_size) +
+        match.group(6) + "\n" +
         "\n".join(hex_lines) + "\n" +
-        match.group(6)
+        match.group(7)
     )
 
-new_content = pattern.sub(replacement, content)
+def replacer(match):
+    sensor = match.group(3)
+    return make_replacement(sensor, match)
+
+new_content = pattern.sub(replacer, content)
 
 with open(header_path, "w") as f:
     f.write(new_content)

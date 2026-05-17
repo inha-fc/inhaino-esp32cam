@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run from repo root: ./Scripts/extract_html.sh
-# Extracts all sensor HTML files from CameraWebServer/camera_index.h
+# Extracts sensor HTML files from CameraWebServer/camera_index.h into index/
 set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -11,7 +11,6 @@ import re, gzip
 with open("$REPO_ROOT/CameraWebServer/camera_index.h", "r") as f:
     content = f.read()
 
-# Parse each sensor array block separately
 pattern = re.compile(
     r'//File:\s*(\S+),\s*Size:\s*\d+\s*\n'
     r'#define\s+(\w+)_len\s+\d+\s*\n'
@@ -19,19 +18,23 @@ pattern = re.compile(
     re.DOTALL
 )
 
+# e.g. index_ov2640.html.gz → ov2640
+def sensor_name(filename):
+    return re.search(r'index_(\w+)\.html', filename).group(1)
+
 for match in pattern.finditer(content):
     filename, array_name, hex_body = match.groups()
     hex_vals = re.findall(r'0x([0-9A-Fa-f]{2})', hex_body)
     gz_data = bytes(int(h, 16) for h in hex_vals)
-    html = gzip.decompress(gz_data)
+    html = gzip.decompress(gz_data).decode("utf-8")
 
-    # e.g. index_ov2640.html.gz → index_ov2640.html
-    out_name = filename.replace(".gz", "")
-    out_path = "$REPO_ROOT/Scripts/" + out_name
-    with open(out_path, "wb") as f:
+    sensor = sensor_name(filename)
+    out_path = "$REPO_ROOT/index/" + sensor + ".html"
+    with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
 
-    print(f"  {filename} ({len(gz_data)} bytes gz) → {out_name} ({len(html)} bytes)")
+    print(f"  {filename} → index/{sensor}.html ({len(html)} bytes)")
 
-print("Done. Edit the HTML files in Scripts/, then run pack_html.sh.")
+print("Done. Edit HTML files in index/, common files in index/common/.")
+print("Run ./Scripts/pack_html.sh when ready.")
 EOF
