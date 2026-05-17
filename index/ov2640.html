@@ -314,6 +314,33 @@
 
 
 
+                        <hr style="width:100%">
+                        <label for="nav-toggle-sys" class="toggle-section-label">&#9776;&nbsp;&nbsp;System</label><input type="checkbox" id="nav-toggle-sys" class="hidden toggle-section-button">
+                        <section class="toggle-section">
+                            <button id="refresh-info" style="width:calc(100% - 10px)">Refresh Info</button>
+                            <div class="input-group"><label>IP</label><span id="info-ip">—</span></div>
+                            <div class="input-group"><label>RSSI</label><span id="info-rssi">—</span></div>
+                            <div class="input-group"><label>Uptime</label><span id="info-uptime">—</span></div>
+                            <div class="input-group"><label>Heap Free</label><span id="info-heap">—</span></div>
+                            <hr style="width:100%">
+                            <div class="input-group" style="flex-direction:column;gap:4px">
+                                <label style="min-width:unset">Firmware (.bin)</label>
+                                <input id="ota-file" type="file" accept=".bin">
+                            </div>
+                            <button id="ota-upload">Upload Firmware</button>
+                            <span id="ota-status" style="font-size:13px;display:block;margin:2px 5px"></span>
+                            <hr style="width:100%">
+                            <label style="display:block;margin:4px 0 2px">Certificate PEM</label>
+                            <textarea id="cert-pem" rows="4" style="width:100%;box-sizing:border-box;background:#222;color:#EEE;border:1px solid #555;border-radius:4px;font-size:11px;resize:vertical"></textarea>
+                            <button id="cert-upload">Upload Cert</button>
+                            <label style="display:block;margin:4px 0 2px">Private Key PEM</label>
+                            <textarea id="key-pem" rows="4" style="width:100%;box-sizing:border-box;background:#222;color:#EEE;border:1px solid #555;border-radius:4px;font-size:11px;resize:vertical"></textarea>
+                            <button id="key-upload">Upload Key</button>
+                            <span id="cert-status" style="font-size:13px;display:block;margin:2px 5px"></span>
+                            <hr style="width:100%">
+                            <button id="restart-btn" style="background:#c04000;width:calc(100% - 10px)">Restart Device</button>
+                        </section>
+
                     </nav>
                 </div>
                 <figure>
@@ -723,6 +750,66 @@ document.addEventListener('DOMContentLoaded', function (event) {
       updateValue(detect, false)
       updateValue(recognize, false)
     }
+  }
+
+  // System Info
+  document.getElementById('refresh-info').onclick = () => {
+    fetch(`${baseHost}/info`)
+      .then(r => r.json())
+      .then(d => {
+        document.getElementById('info-ip').textContent = d.ip
+        document.getElementById('info-rssi').textContent = d.rssi + ' dBm'
+        const h = Math.floor(d.uptime_s / 3600)
+        const m = Math.floor((d.uptime_s % 3600) / 60)
+        const s = d.uptime_s % 60
+        document.getElementById('info-uptime').textContent = `${h}h ${m}m ${s}s`
+        document.getElementById('info-heap').textContent =
+          `${(d.heap_free / 1024).toFixed(0)} kB (min ${(d.heap_min / 1024).toFixed(0)} kB)`
+      })
+      .catch(e => console.error('info:', e))
+  }
+
+  // OTA Firmware Upload
+  document.getElementById('ota-upload').onclick = () => {
+    const file = document.getElementById('ota-file').files[0]
+    const status = document.getElementById('ota-status')
+    if (!file) { status.textContent = 'Select a .bin file first'; return }
+    status.textContent = 'Uploading… do not close this page.'
+    fetch(`${baseHost}/update`, {
+      method: 'POST', body: file,
+      headers: { 'Content-Type': 'application/octet-stream' }
+    })
+      .then(r => r.json())
+      .then(j => { status.textContent = j.note || j.result })
+      .catch(e => { status.textContent = 'Error: ' + e })
+  }
+
+  // Certificate Upload
+  const certStatus = document.getElementById('cert-status')
+  document.getElementById('cert-upload').onclick = () => {
+    const pem = document.getElementById('cert-pem').value.trim()
+    if (!pem) { certStatus.textContent = 'Paste certificate PEM first'; return }
+    fetch(`${baseHost}/cert`, { method: 'POST', body: pem, headers: { 'Content-Type': 'text/plain' } })
+      .then(r => r.json())
+      .then(j => { certStatus.textContent = j.note || j.result })
+      .catch(e => { certStatus.textContent = 'Error: ' + e })
+  }
+  document.getElementById('key-upload').onclick = () => {
+    const pem = document.getElementById('key-pem').value.trim()
+    if (!pem) { certStatus.textContent = 'Paste key PEM first'; return }
+    fetch(`${baseHost}/cert/key`, { method: 'POST', body: pem, headers: { 'Content-Type': 'text/plain' } })
+      .then(r => r.json())
+      .then(j => { certStatus.textContent = j.note || j.result })
+      .catch(e => { certStatus.textContent = 'Error: ' + e })
+  }
+
+  // Restart
+  document.getElementById('restart-btn').onclick = () => {
+    if (!confirm('Restart the device?')) return
+    fetch(`${baseHost}/restart`, { method: 'POST' })
+      .then(r => r.json())
+      .then(j => { alert(j.note || j.result) })
+      .catch(() => {})
   }
 })
 
