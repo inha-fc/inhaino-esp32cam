@@ -7,6 +7,7 @@ on:
       - 'CameraWebServer/**'
       - 'index/**'
       - 'Scripts/**'
+  workflow_dispatch:
 
 jobs:
   deploy:
