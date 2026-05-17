@@ -51,7 +51,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: arduino/setup-arduino-cli@v2
+      - name: Install arduino-cli 0.35.3
+        run: |
+          curl -fsSL https://github.com/arduino/arduino-cli/releases/download/v0.35.3/arduino-cli_0.35.3_Linux_64bit.tar.gz \
+            | sudo tar xz -C /usr/local/bin arduino-cli
 
       - name: Install espressif:esp32 platform
         env:
