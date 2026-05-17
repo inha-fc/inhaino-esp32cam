@@ -33,6 +33,8 @@ git clone -b arduino-ide https://github.com/inha-fc/inhaino-esp32cam.git
 - PSRAM 유무에 따른 자동 화질 조절
 - LED 플래시 지원 (핀 정의 시 자동 활성화)
 - Wi-Fi 인증정보 및 카메라 접속 계정 분리 관리 (`secrets.h`)
+- HTTP Basic Auth 기반 인증 (전체 엔드포인트 보호)
+- REST API (JSON 응답) + MQTT 통신 지원
 - GitHub Actions 멀티 보드 빌드 검증 (ESP32 / S2 / S3, PSRAM on/off)
 - `arduino-ide` 브랜치 자동 배포
 
@@ -271,6 +273,105 @@ git update-index --skip-worktree CameraWebServer/secrets.h
 - 실시간 스트림(`/stream`, 포트 81)은 브라우저 `<img>` 태그 제한으로 별도 팝업이 뜰 수 있습니다.
 
 > **주의**: `CAMERA_AUTH_PASS`의 기본값 `changeme`은 반드시 변경하세요.
+
+---
+
+## REST API
+
+모든 요청에는 HTTP Basic Auth 헤더가 필요합니다.
+
+| 메서드 | 경로 | 설명 | 응답 |
+|---|---|---|---|
+| GET | `/status` | 카메라 전체 상태 조회 | JSON |
+| GET | `/control?var=X&val=Y` | 카메라 설정 변경 | JSON |
+| GET | `/capture` | JPEG 스냅샷 캡처 | image/jpeg |
+| GET | `/stream` | MJPEG 실시간 스트림 (포트 81) | multipart |
+
+**`/control` 변수 목록**
+
+| var | 설명 | 범위 |
+|---|---|---|
+| `framesize` | 해상도 | 0–13 |
+| `quality` | JPEG 품질 | 4–63 (낮을수록 고품질) |
+| `brightness` | 밝기 | -2 ~ 2 |
+| `contrast` | 대비 | -2 ~ 2 |
+| `saturation` | 채도 | -2 ~ 2 |
+| `hmirror` | 수평 반전 | 0 / 1 |
+| `vflip` | 수직 반전 | 0 / 1 |
+| `awb` | 자동 화이트밸런스 | 0 / 1 |
+| `agc` | 자동 게인 | 0 / 1 |
+| `aec` | 자동 노출 | 0 / 1 |
+
+**예시**
+
+```sh
+# 밝기 +1 설정
+curl -u admin:changeme "http://192.168.x.x/control?var=brightness&val=1"
+# → {"result":"ok"}
+
+# 스냅샷 저장
+curl -u admin:changeme "http://192.168.x.x/capture" -o capture.jpg
+```
+
+---
+
+## MQTT
+
+### 라이브러리 설치
+
+Arduino IDE → `Tools → Manage Libraries` → **PubSubClient** by Nick O'Leary 설치
+
+### 설정
+
+`secrets.h`에서 브로커 정보를 입력합니다.
+
+```cpp
+#define MQTT_BROKER    "192.168.1.x"
+#define MQTT_PORT      1883
+#define MQTT_USER      ""
+#define MQTT_PASS      ""
+#define MQTT_CLIENT_ID "esp32cam-1"
+```
+
+### 토픽 구조
+
+| 방향 | 토픽 | 페이로드 | 설명 |
+|---|---|---|---|
+| Subscribe | `cam/{CLIENT_ID}/cmd` | JSON | 카메라 설정 명령 수신 |
+| Publish | `cam/{CLIENT_ID}/status` | JSON | 카메라 상태 (retained) |
+| Publish LWT | `cam/{CLIENT_ID}/online` | `1` / `0` | 연결 상태 (retained) |
+
+### 명령 페이로드 형식
+
+```json
+{"var": "brightness", "val": 1}
+```
+
+명령 수신 후 자동으로 `status` 토픽에 최신 상태가 발행됩니다.
+
+### 상태 페이로드 예시
+
+```json
+{
+  "ip": "192.168.1.42",
+  "framesize": 5,
+  "quality": 10,
+  "brightness": 0,
+  "contrast": 0,
+  "saturation": 0
+}
+```
+
+### mosquitto 테스트 예시
+
+```sh
+# 명령 전송 (밝기 +2)
+mosquitto_pub -h 192.168.1.x -t "cam/esp32cam-1/cmd" \
+  -m '{"var":"brightness","val":2}'
+
+# 상태 구독
+mosquitto_sub -h 192.168.1.x -t "cam/esp32cam-1/status"
+```
 
 ---
 

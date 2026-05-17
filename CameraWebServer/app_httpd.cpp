@@ -354,6 +354,73 @@ static esp_err_t parse_get(httpd_req_t *req, char **obuf) {
   return ESP_FAIL;
 }
 
+int camera_apply_control(const char *variable, int val) {
+  sensor_t *s = esp_camera_sensor_get();
+  if (!s) return -1;
+
+#if defined(LED_GPIO_NUM)
+  if (!strcmp(variable, "led_intensity")) {
+    led_duty = val;
+    if (isStreaming) enable_led(true);
+    return 0;
+  }
+#endif
+
+  if (!strcmp(variable, "framesize")) {
+    if (s->pixformat == PIXFORMAT_JPEG)
+      return s->set_framesize(s, (framesize_t)val);
+    return 0;
+  } else if (!strcmp(variable, "quality")) {
+    return s->set_quality(s, val);
+  } else if (!strcmp(variable, "contrast")) {
+    return s->set_contrast(s, val);
+  } else if (!strcmp(variable, "brightness")) {
+    return s->set_brightness(s, val);
+  } else if (!strcmp(variable, "saturation")) {
+    return s->set_saturation(s, val);
+  } else if (!strcmp(variable, "gainceiling")) {
+    return s->set_gainceiling(s, (gainceiling_t)val);
+  } else if (!strcmp(variable, "colorbar")) {
+    return s->set_colorbar(s, val);
+  } else if (!strcmp(variable, "awb")) {
+    return s->set_whitebal(s, val);
+  } else if (!strcmp(variable, "agc")) {
+    return s->set_gain_ctrl(s, val);
+  } else if (!strcmp(variable, "aec")) {
+    return s->set_exposure_ctrl(s, val);
+  } else if (!strcmp(variable, "hmirror")) {
+    return s->set_hmirror(s, val);
+  } else if (!strcmp(variable, "vflip")) {
+    return s->set_vflip(s, val);
+  } else if (!strcmp(variable, "awb_gain")) {
+    return s->set_awb_gain(s, val);
+  } else if (!strcmp(variable, "agc_gain")) {
+    return s->set_agc_gain(s, val);
+  } else if (!strcmp(variable, "aec_value")) {
+    return s->set_aec_value(s, val);
+  } else if (!strcmp(variable, "aec2")) {
+    return s->set_aec2(s, val);
+  } else if (!strcmp(variable, "dcw")) {
+    return s->set_dcw(s, val);
+  } else if (!strcmp(variable, "bpc")) {
+    return s->set_bpc(s, val);
+  } else if (!strcmp(variable, "wpc")) {
+    return s->set_wpc(s, val);
+  } else if (!strcmp(variable, "raw_gma")) {
+    return s->set_raw_gma(s, val);
+  } else if (!strcmp(variable, "lenc")) {
+    return s->set_lenc(s, val);
+  } else if (!strcmp(variable, "special_effect")) {
+    return s->set_special_effect(s, val);
+  } else if (!strcmp(variable, "wb_mode")) {
+    return s->set_wb_mode(s, val);
+  } else if (!strcmp(variable, "ae_level")) {
+    return s->set_ae_level(s, val);
+  }
+  log_i("Unknown command: %s", variable);
+  return -1;
+}
+
 static esp_err_t cmd_handler(httpd_req_t *req) {
   if (!check_auth(req)) {
     return reject_auth(req);
@@ -374,78 +441,12 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
 
   int val = atoi(value);
   log_i("%s = %d", variable, val);
-  sensor_t *s = esp_camera_sensor_get();
-  int res = 0;
-
-  if (!strcmp(variable, "framesize")) {
-    if (s->pixformat == PIXFORMAT_JPEG) {
-      res = s->set_framesize(s, (framesize_t)val);
-    }
-  } else if (!strcmp(variable, "quality")) {
-    res = s->set_quality(s, val);
-  } else if (!strcmp(variable, "contrast")) {
-    res = s->set_contrast(s, val);
-  } else if (!strcmp(variable, "brightness")) {
-    res = s->set_brightness(s, val);
-  } else if (!strcmp(variable, "saturation")) {
-    res = s->set_saturation(s, val);
-  } else if (!strcmp(variable, "gainceiling")) {
-    res = s->set_gainceiling(s, (gainceiling_t)val);
-  } else if (!strcmp(variable, "colorbar")) {
-    res = s->set_colorbar(s, val);
-  } else if (!strcmp(variable, "awb")) {
-    res = s->set_whitebal(s, val);
-  } else if (!strcmp(variable, "agc")) {
-    res = s->set_gain_ctrl(s, val);
-  } else if (!strcmp(variable, "aec")) {
-    res = s->set_exposure_ctrl(s, val);
-  } else if (!strcmp(variable, "hmirror")) {
-    res = s->set_hmirror(s, val);
-  } else if (!strcmp(variable, "vflip")) {
-    res = s->set_vflip(s, val);
-  } else if (!strcmp(variable, "awb_gain")) {
-    res = s->set_awb_gain(s, val);
-  } else if (!strcmp(variable, "agc_gain")) {
-    res = s->set_agc_gain(s, val);
-  } else if (!strcmp(variable, "aec_value")) {
-    res = s->set_aec_value(s, val);
-  } else if (!strcmp(variable, "aec2")) {
-    res = s->set_aec2(s, val);
-  } else if (!strcmp(variable, "dcw")) {
-    res = s->set_dcw(s, val);
-  } else if (!strcmp(variable, "bpc")) {
-    res = s->set_bpc(s, val);
-  } else if (!strcmp(variable, "wpc")) {
-    res = s->set_wpc(s, val);
-  } else if (!strcmp(variable, "raw_gma")) {
-    res = s->set_raw_gma(s, val);
-  } else if (!strcmp(variable, "lenc")) {
-    res = s->set_lenc(s, val);
-  } else if (!strcmp(variable, "special_effect")) {
-    res = s->set_special_effect(s, val);
-  } else if (!strcmp(variable, "wb_mode")) {
-    res = s->set_wb_mode(s, val);
-  } else if (!strcmp(variable, "ae_level")) {
-    res = s->set_ae_level(s, val);
-  }
-#if defined(LED_GPIO_NUM)
-  else if (!strcmp(variable, "led_intensity")) {
-    led_duty = val;
-    if (isStreaming) {
-      enable_led(true);
-    }
-  }
-#endif
-  else {
-    log_i("Unknown command: %s", variable);
-    res = -1;
-  }
-
+  int res = camera_apply_control(variable, val);
+  httpd_resp_set_type(req, "application/json");
   if (res < 0) {
-    return httpd_resp_send_500(req);
+    return httpd_resp_send(req, "{\"result\":\"error\"}", -1);
   }
-
-  return httpd_resp_send(req, NULL, 0);
+  return httpd_resp_send(req, "{\"result\":\"ok\"}", -1);
 }
 
 static int print_reg(char *p, char *end, sensor_t *s, uint16_t reg, uint32_t mask) {

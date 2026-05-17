@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "esp_camera.h"
 #include <WiFi.h>
+#include <PubSubClient.h>
 
 // ===========================
 // Select camera model in board_config.h
@@ -8,12 +9,75 @@
 #include "board_config.h"
 
 #include "secrets.h"
+#include "camera_control.h"
 
 const char *ssid = WIFI_SSID;
 const char *password = WIFI_PASSWORD;
 
 void startCameraServer();
 void setupLedFlash();
+
+// ===========================
+// MQTT
+// ===========================
+#define MQTT_TOPIC_CMD    "cam/" MQTT_CLIENT_ID "/cmd"
+#define MQTT_TOPIC_STATUS "cam/" MQTT_CLIENT_ID "/status"
+#define MQTT_TOPIC_ONLINE "cam/" MQTT_CLIENT_ID "/online"
+
+static WiFiClient   mqttNet;
+static PubSubClient mqtt(mqttNet);
+
+static void mqtt_publish_status() {
+  sensor_t *s = esp_camera_sensor_get();
+  if (!s) return;
+  char buf[256];
+  snprintf(buf, sizeof(buf),
+    "{\"ip\":\"%s\",\"framesize\":%u,\"quality\":%u,"
+    "\"brightness\":%d,\"contrast\":%d,\"saturation\":%d}",
+    WiFi.localIP().toString().c_str(),
+    (unsigned)s->status.framesize,
+    (unsigned)s->status.quality,
+    s->status.brightness,
+    s->status.contrast,
+    s->status.saturation
+  );
+  mqtt.publish(MQTT_TOPIC_STATUS, buf, true);
+}
+
+static void mqtt_callback(char *topic, byte *payload, unsigned int len) {
+  if (len == 0 || len >= 128) return;
+  char buf[128];
+  memcpy(buf, payload, len);
+  buf[len] = '\0';
+
+  // Payload format: {"var":"brightness","val":2}
+  char var[32] = {0};
+  int  val = 0;
+  if (sscanf(buf, "{\"var\":\"%31[^\"]\",\"val\":%d}", var, &val) == 2) {
+    camera_apply_control(var, val);
+    mqtt_publish_status();
+  }
+}
+
+static void mqtt_connect() {
+  while (!mqtt.connected()) {
+    Serial.print("MQTT connecting...");
+    bool ok = strlen(MQTT_USER) > 0
+      ? mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASS,
+                     MQTT_TOPIC_ONLINE, 0, true, "0")
+      : mqtt.connect(MQTT_CLIENT_ID,
+                     MQTT_TOPIC_ONLINE, 0, true, "0");
+    if (ok) {
+      Serial.println(" connected");
+      mqtt.publish(MQTT_TOPIC_ONLINE, "1", true);
+      mqtt.subscribe(MQTT_TOPIC_CMD);
+      mqtt_publish_status();
+    } else {
+      Serial.printf(" failed (rc=%d), retry in 5s\n", mqtt.state());
+      delay(5000);
+    }
+  }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -122,9 +186,16 @@ void setup() {
   Serial.print("Camera Ready! Use 'http://");
   Serial.print(WiFi.localIP());
   Serial.println("' to connect");
+
+  mqtt.setServer(MQTT_BROKER, MQTT_PORT);
+  mqtt.setCallback(mqtt_callback);
+  mqtt_connect();
 }
 
 void loop() {
-  // Do nothing. Everything is done in another task by the web server
-  delay(10000);
+  if (!mqtt.connected()) {
+    mqtt_connect();
+  }
+  mqtt.loop();
+  delay(10);
 }
