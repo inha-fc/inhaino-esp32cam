@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #include "Arduino.h"
-#include "esp_http_server.h"
+#include "esp_https_server.h"
 #include "esp_timer.h"
 #include "esp_camera.h"
 #include "img_converters.h"
@@ -22,6 +22,14 @@
 #include "sdkconfig.h"
 #include "camera_index.h"
 #include "board_config.h"
+#include "secrets.h"
+#include "default_cert.h"
+#include "mbedtls/base64.h"
+#include "nvs.h"
+#include <WiFi.h>
+#include <Update.h>
+
+#define TLS_NVS_NS "cam_tls"
 
 #if defined(ARDUINO_ARCH_ESP32) && defined(CONFIG_ARDUHAL_ESP_LOG)
 #include "esp32-hal-log.h"
@@ -102,7 +110,36 @@ void enable_led(bool en) {  // Turn LED On or Off
 }
 #endif
 
+static bool check_auth(httpd_req_t *req) {
+  char auth_header[128] = {0};
+  if (httpd_req_get_hdr_value_str(req, "Authorization", auth_header, sizeof(auth_header)) != ESP_OK) {
+    return false;
+  }
+  if (strncmp(auth_header, "Basic ", 6) != 0) {
+    return false;
+  }
+  unsigned char decoded[64] = {0};
+  size_t out_len = 0;
+  if (mbedtls_base64_decode(decoded, sizeof(decoded), &out_len,
+      (const unsigned char *)(auth_header + 6), strlen(auth_header + 6)) != 0) {
+    return false;
+  }
+  decoded[out_len] = '\0';
+  char expected[64];
+  snprintf(expected, sizeof(expected), "%s:%s", CAMERA_AUTH_USER, CAMERA_AUTH_PASS);
+  return strcmp((char *)decoded, expected) == 0;
+}
+
+static esp_err_t reject_auth(httpd_req_t *req) {
+  httpd_resp_set_status(req, "401 Unauthorized");
+  httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"ESP32-CAM\"");
+  return httpd_resp_send(req, NULL, 0);
+}
+
 static esp_err_t bmp_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   camera_fb_t *fb = NULL;
   esp_err_t res = ESP_OK;
 #if ARDUHAL_LOG_LEVEL >= ARDUHAL_LOG_LEVEL_INFO
@@ -117,7 +154,6 @@ static esp_err_t bmp_handler(httpd_req_t *req) {
 
   httpd_resp_set_type(req, "image/x-windows-bmp");
   httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.bmp");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
   char ts[32];
   // Cast to uint32_t is safe until year 2106.
@@ -155,6 +191,9 @@ static size_t jpg_encode_stream(void *arg, size_t index, const void *data, size_
 }
 
 static esp_err_t capture_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   camera_fb_t *fb = NULL;
   esp_err_t res = ESP_OK;
 #if ARDUHAL_LOG_LEVEL >= ARDUHAL_LOG_LEVEL_INFO
@@ -178,7 +217,6 @@ static esp_err_t capture_handler(httpd_req_t *req) {
 
   httpd_resp_set_type(req, "image/jpeg");
   httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
   char ts[32];
   // Cast to uint32_t is safe until year 2106.
@@ -322,7 +360,77 @@ static esp_err_t parse_get(httpd_req_t *req, char **obuf) {
   return ESP_FAIL;
 }
 
+int camera_apply_control(const char *variable, int val) {
+  sensor_t *s = esp_camera_sensor_get();
+  if (!s) return -1;
+
+#if defined(LED_GPIO_NUM)
+  if (!strcmp(variable, "led_intensity")) {
+    led_duty = val;
+    if (isStreaming) enable_led(true);
+    return 0;
+  }
+#endif
+
+  if (!strcmp(variable, "framesize")) {
+    if (s->pixformat == PIXFORMAT_JPEG)
+      return s->set_framesize(s, (framesize_t)val);
+    return 0;
+  } else if (!strcmp(variable, "quality")) {
+    return s->set_quality(s, val);
+  } else if (!strcmp(variable, "contrast")) {
+    return s->set_contrast(s, val);
+  } else if (!strcmp(variable, "brightness")) {
+    return s->set_brightness(s, val);
+  } else if (!strcmp(variable, "saturation")) {
+    return s->set_saturation(s, val);
+  } else if (!strcmp(variable, "gainceiling")) {
+    return s->set_gainceiling(s, (gainceiling_t)val);
+  } else if (!strcmp(variable, "colorbar")) {
+    return s->set_colorbar(s, val);
+  } else if (!strcmp(variable, "awb")) {
+    return s->set_whitebal(s, val);
+  } else if (!strcmp(variable, "agc")) {
+    return s->set_gain_ctrl(s, val);
+  } else if (!strcmp(variable, "aec")) {
+    return s->set_exposure_ctrl(s, val);
+  } else if (!strcmp(variable, "hmirror")) {
+    return s->set_hmirror(s, val);
+  } else if (!strcmp(variable, "vflip")) {
+    return s->set_vflip(s, val);
+  } else if (!strcmp(variable, "awb_gain")) {
+    return s->set_awb_gain(s, val);
+  } else if (!strcmp(variable, "agc_gain")) {
+    return s->set_agc_gain(s, val);
+  } else if (!strcmp(variable, "aec_value")) {
+    return s->set_aec_value(s, val);
+  } else if (!strcmp(variable, "aec2")) {
+    return s->set_aec2(s, val);
+  } else if (!strcmp(variable, "dcw")) {
+    return s->set_dcw(s, val);
+  } else if (!strcmp(variable, "bpc")) {
+    return s->set_bpc(s, val);
+  } else if (!strcmp(variable, "wpc")) {
+    return s->set_wpc(s, val);
+  } else if (!strcmp(variable, "raw_gma")) {
+    return s->set_raw_gma(s, val);
+  } else if (!strcmp(variable, "lenc")) {
+    return s->set_lenc(s, val);
+  } else if (!strcmp(variable, "special_effect")) {
+    return s->set_special_effect(s, val);
+  } else if (!strcmp(variable, "wb_mode")) {
+    return s->set_wb_mode(s, val);
+  } else if (!strcmp(variable, "ae_level")) {
+    return s->set_ae_level(s, val);
+  }
+  log_i("Unknown command: %s", variable);
+  return -1;
+}
+
 static esp_err_t cmd_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   char *buf = NULL;
   char variable[32];
   char value[32];
@@ -339,79 +447,12 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
 
   int val = atoi(value);
   log_i("%s = %d", variable, val);
-  sensor_t *s = esp_camera_sensor_get();
-  int res = 0;
-
-  if (!strcmp(variable, "framesize")) {
-    if (s->pixformat == PIXFORMAT_JPEG) {
-      res = s->set_framesize(s, (framesize_t)val);
-    }
-  } else if (!strcmp(variable, "quality")) {
-    res = s->set_quality(s, val);
-  } else if (!strcmp(variable, "contrast")) {
-    res = s->set_contrast(s, val);
-  } else if (!strcmp(variable, "brightness")) {
-    res = s->set_brightness(s, val);
-  } else if (!strcmp(variable, "saturation")) {
-    res = s->set_saturation(s, val);
-  } else if (!strcmp(variable, "gainceiling")) {
-    res = s->set_gainceiling(s, (gainceiling_t)val);
-  } else if (!strcmp(variable, "colorbar")) {
-    res = s->set_colorbar(s, val);
-  } else if (!strcmp(variable, "awb")) {
-    res = s->set_whitebal(s, val);
-  } else if (!strcmp(variable, "agc")) {
-    res = s->set_gain_ctrl(s, val);
-  } else if (!strcmp(variable, "aec")) {
-    res = s->set_exposure_ctrl(s, val);
-  } else if (!strcmp(variable, "hmirror")) {
-    res = s->set_hmirror(s, val);
-  } else if (!strcmp(variable, "vflip")) {
-    res = s->set_vflip(s, val);
-  } else if (!strcmp(variable, "awb_gain")) {
-    res = s->set_awb_gain(s, val);
-  } else if (!strcmp(variable, "agc_gain")) {
-    res = s->set_agc_gain(s, val);
-  } else if (!strcmp(variable, "aec_value")) {
-    res = s->set_aec_value(s, val);
-  } else if (!strcmp(variable, "aec2")) {
-    res = s->set_aec2(s, val);
-  } else if (!strcmp(variable, "dcw")) {
-    res = s->set_dcw(s, val);
-  } else if (!strcmp(variable, "bpc")) {
-    res = s->set_bpc(s, val);
-  } else if (!strcmp(variable, "wpc")) {
-    res = s->set_wpc(s, val);
-  } else if (!strcmp(variable, "raw_gma")) {
-    res = s->set_raw_gma(s, val);
-  } else if (!strcmp(variable, "lenc")) {
-    res = s->set_lenc(s, val);
-  } else if (!strcmp(variable, "special_effect")) {
-    res = s->set_special_effect(s, val);
-  } else if (!strcmp(variable, "wb_mode")) {
-    res = s->set_wb_mode(s, val);
-  } else if (!strcmp(variable, "ae_level")) {
-    res = s->set_ae_level(s, val);
-  }
-#if defined(LED_GPIO_NUM)
-  else if (!strcmp(variable, "led_intensity")) {
-    led_duty = val;
-    if (isStreaming) {
-      enable_led(true);
-    }
-  }
-#endif
-  else {
-    log_i("Unknown command: %s", variable);
-    res = -1;
-  }
-
+  int res = camera_apply_control(variable, val);
+  httpd_resp_set_type(req, "application/json");
   if (res < 0) {
-    return httpd_resp_send_500(req);
+    return httpd_resp_send(req, "{\"result\":\"error\"}", -1);
   }
-
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-  return httpd_resp_send(req, NULL, 0);
+  return httpd_resp_send(req, "{\"result\":\"ok\"}", -1);
 }
 
 static int print_reg(char *p, char *end, sensor_t *s, uint16_t reg, uint32_t mask) {
@@ -419,6 +460,9 @@ static int print_reg(char *p, char *end, sensor_t *s, uint16_t reg, uint32_t mas
 }
 
 static esp_err_t status_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   static char json_response[1024];
 
   sensor_t *s = esp_camera_sensor_get();
@@ -490,11 +534,13 @@ static esp_err_t status_handler(httpd_req_t *req) {
   *p++ = '}';
   *p++ = 0;
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, json_response, strlen(json_response));
 }
 
 static esp_err_t xclk_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   char *buf = NULL;
   char _xclk[32];
 
@@ -517,11 +563,13 @@ static esp_err_t xclk_handler(httpd_req_t *req) {
     return httpd_resp_send_500(req);
   }
 
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, NULL, 0);
 }
 
 static esp_err_t reg_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   char *buf = NULL;
   char _reg[32];
   char _mask[32];
@@ -549,11 +597,13 @@ static esp_err_t reg_handler(httpd_req_t *req) {
     return httpd_resp_send_500(req);
   }
 
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, NULL, 0);
 }
 
 static esp_err_t greg_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   char *buf = NULL;
   char _reg[32];
   char _mask[32];
@@ -579,7 +629,6 @@ static esp_err_t greg_handler(httpd_req_t *req) {
 
   char buffer[20];
   const char *val = itoa(res, buffer, 10);
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, val, strlen(val));
 }
 
@@ -592,6 +641,9 @@ static int parse_get_var(char *buf, const char *key, int def) {
 }
 
 static esp_err_t pll_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   char *buf = NULL;
 
   if (parse_get(req, &buf) != ESP_OK) {
@@ -615,11 +667,13 @@ static esp_err_t pll_handler(httpd_req_t *req) {
     return httpd_resp_send_500(req);
   }
 
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, NULL, 0);
 }
 
 static esp_err_t win_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   char *buf = NULL;
 
   if (parse_get(req, &buf) != ESP_OK) {
@@ -650,11 +704,13 @@ static esp_err_t win_handler(httpd_req_t *req) {
     return httpd_resp_send_500(req);
   }
 
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, NULL, 0);
 }
 
 static esp_err_t index_handler(httpd_req_t *req) {
+  if (!check_auth(req)) {
+    return reject_auth(req);
+  }
   httpd_resp_set_type(req, "text/html");
   httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
   sensor_t *s = esp_camera_sensor_get();
@@ -672,9 +728,184 @@ static esp_err_t index_handler(httpd_req_t *req) {
   }
 }
 
+static bool tls_load_nvs(char **cert_out, char **key_out) {
+  nvs_handle_t nvs;
+  if (nvs_open(TLS_NVS_NS, NVS_READONLY, &nvs) != ESP_OK) return false;
+
+  size_t cert_len = 0, key_len = 0;
+  bool ok = nvs_get_str(nvs, "cert", NULL, &cert_len) == ESP_OK &&
+            nvs_get_str(nvs, "key",  NULL, &key_len)  == ESP_OK;
+  if (!ok) { nvs_close(nvs); return false; }
+
+  *cert_out = (char *)malloc(cert_len);
+  *key_out  = (char *)malloc(key_len);
+  ok = *cert_out && *key_out &&
+       nvs_get_str(nvs, "cert", *cert_out, &cert_len) == ESP_OK &&
+       nvs_get_str(nvs, "key",  *key_out,  &key_len)  == ESP_OK;
+  nvs_close(nvs);
+  if (!ok) { free(*cert_out); free(*key_out); }
+  return ok;
+}
+
+static bool tls_save_nvs(const char *cert, const char *key) {
+  nvs_handle_t nvs;
+  if (nvs_open(TLS_NVS_NS, NVS_READWRITE, &nvs) != ESP_OK) return false;
+  bool ok = nvs_set_str(nvs, "cert", cert) == ESP_OK &&
+            nvs_set_str(nvs, "key",  key)  == ESP_OK &&
+            nvs_commit(nvs) == ESP_OK;
+  nvs_close(nvs);
+  return ok;
+}
+
+static esp_err_t recv_body(httpd_req_t *req, char **out, size_t max_len) {
+  int len = req->content_len;
+  if (len <= 0 || (size_t)len > max_len) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid body size");
+    return ESP_FAIL;
+  }
+  char *buf = (char *)malloc(len + 1);
+  if (!buf) { httpd_resp_send_500(req); return ESP_FAIL; }
+  int got = httpd_req_recv(req, buf, len);
+  if (got <= 0) { free(buf); httpd_resp_send_500(req); return ESP_FAIL; }
+  buf[got] = '\0';
+  *out = buf;
+  return ESP_OK;
+}
+
+// POST /cert  — body: certificate PEM
+// POST /cert/key — body: private key PEM
+// Both together update NVS; device must restart to apply.
+static esp_err_t cert_handler(httpd_req_t *req) {
+  if (!check_auth(req)) return reject_auth(req);
+
+  char *body = NULL;
+  if (recv_body(req, &body, 4096) != ESP_OK) return ESP_FAIL;
+
+  bool is_key = strstr(req->uri, "/key") != NULL;
+
+  // Read the counterpart from NVS (or embedded default) to keep both in sync.
+  char *nvs_cert = NULL, *nvs_key = NULL;
+  bool had_nvs = tls_load_nvs(&nvs_cert, &nvs_key);
+  const char *cert_pem = had_nvs ? nvs_cert : DEFAULT_CERT_PEM;
+  const char *key_pem  = had_nvs ? nvs_key  : DEFAULT_KEY_PEM;
+
+  bool ok = is_key ? tls_save_nvs(cert_pem, body)
+                   : tls_save_nvs(body, key_pem);
+  if (had_nvs) { free(nvs_cert); free(nvs_key); }
+  free(body);
+
+  httpd_resp_set_type(req, "application/json");
+  if (!ok) return httpd_resp_send(req, "{\"result\":\"error\"}", -1);
+  return httpd_resp_send(req,
+    "{\"result\":\"ok\",\"note\":\"POST /restart to apply\"}", -1);
+}
+
+// POST /restart — graceful software reset
+static esp_err_t restart_handler(httpd_req_t *req) {
+  if (!check_auth(req)) return reject_auth(req);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, "{\"result\":\"ok\",\"note\":\"restarting\"}", -1);
+  vTaskDelay(500 / portTICK_PERIOD_MS);
+  esp_restart();
+  return ESP_OK;
+}
+
+static esp_err_t info_handler(httpd_req_t *req) {
+  if (!check_auth(req)) return reject_auth(req);
+  sensor_t *s = esp_camera_sensor_get();
+  char buf[256];
+  snprintf(buf, sizeof(buf),
+    "{\"ip\":\"%s\",\"rssi\":%d,\"uptime_s\":%llu,"
+    "\"heap_free\":%u,\"heap_min\":%u,\"sensor_pid\":\"0x%04X\"}",
+    WiFi.localIP().toString().c_str(),
+    WiFi.RSSI(),
+    (unsigned long long)(esp_timer_get_time() / 1000000ULL),
+    esp_get_free_heap_size(),
+    esp_get_minimum_free_heap_size(),
+    s ? (unsigned)s->id.PID : 0u
+  );
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_send(req, buf, strlen(buf));
+}
+
+static const char UPDATE_HTML[] =
+  "<!DOCTYPE html><meta charset=utf-8>"
+  "<title>OTA Update</title>"
+  "<h2>Firmware Update</h2>"
+  "<input id=f type=file accept=.bin>"
+  "<button onclick=go()>Upload &amp; Update</button>"
+  "<p id=s></p>"
+  "<script>"
+  "async function go(){"
+    "const f=document.getElementById('f').files[0];"
+    "if(!f){alert('Select a .bin file');return;}"
+    "document.getElementById('s').textContent='Uploading… do not close.';"
+    "try{"
+      "const r=await fetch('/update',{method:'POST',body:f,"
+        "headers:{'Content-Type':'application/octet-stream'}});"
+      "const j=await r.json();"
+      "document.getElementById('s').textContent=j.note||j.result;"
+    "}catch(e){document.getElementById('s').textContent='Error: '+e;}"
+  "}"
+  "</script>";
+
+static esp_err_t update_page_handler(httpd_req_t *req) {
+  if (!check_auth(req)) return reject_auth(req);
+  httpd_resp_set_type(req, "text/html");
+  return httpd_resp_send(req, UPDATE_HTML, sizeof(UPDATE_HTML) - 1);
+}
+
+static esp_err_t update_upload_handler(httpd_req_t *req) {
+  if (!check_auth(req)) return reject_auth(req);
+
+  int content_len = req->content_len;
+  if (content_len <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Content-Length required");
+    return ESP_FAIL;
+  }
+  if (!Update.begin((size_t)content_len)) {
+    log_e("OTA begin failed: %s", Update.errorString());
+    return httpd_resp_send_500(req);
+  }
+
+  uint8_t buf[1024];
+  int remaining = content_len;
+  while (remaining > 0) {
+    int chunk = remaining < (int)sizeof(buf) ? remaining : (int)sizeof(buf);
+    int got = httpd_req_recv(req, (char *)buf, chunk);
+    if (got <= 0 || Update.write(buf, got) != (size_t)got) {
+      Update.abort();
+      return httpd_resp_send_500(req);
+    }
+    remaining -= got;
+  }
+  if (!Update.end(true)) {
+    log_e("OTA end failed: %s", Update.errorString());
+    return httpd_resp_send_500(req);
+  }
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, "{\"result\":\"ok\",\"note\":\"restarting\"}", -1);
+  vTaskDelay(500 / portTICK_PERIOD_MS);
+  esp_restart();
+  return ESP_OK;
+}
+
 void startCameraServer() {
-  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  config.max_uri_handlers = 16;
+  // Load TLS certificate from NVS; fall back to embedded default.
+  char *nvs_cert = NULL, *nvs_key = NULL;
+  bool has_nvs = tls_load_nvs(&nvs_cert, &nvs_key);
+  const char *active_cert = has_nvs ? nvs_cert : DEFAULT_CERT_PEM;
+  const char *active_key  = has_nvs ? nvs_key  : DEFAULT_KEY_PEM;
+
+  httpd_ssl_config_t ssl_cfg = HTTPD_SSL_CONFIG_DEFAULT();
+  ssl_cfg.httpd.max_uri_handlers = 20;
+  ssl_cfg.httpd.ctrl_port = 32768;
+  ssl_cfg.port_secure      = 443;
+  ssl_cfg.servercert       = (const uint8_t *)active_cert;
+  ssl_cfg.servercert_len   = strlen(active_cert) + 1;
+  ssl_cfg.prvtkey_pem      = (const uint8_t *)active_key;
+  ssl_cfg.prvtkey_len      = strlen(active_key) + 1;
 
   httpd_uri_t index_uri = {
     .uri = "/",
@@ -819,27 +1050,55 @@ void startCameraServer() {
 #endif
   };
 
+  httpd_uri_t cert_uri = {
+    .uri = "/cert", .method = HTTP_POST, .handler = cert_handler, .user_ctx = NULL
+  };
+  httpd_uri_t certkey_uri = {
+    .uri = "/cert/key", .method = HTTP_POST, .handler = cert_handler, .user_ctx = NULL
+  };
+  httpd_uri_t restart_uri = {
+    .uri = "/restart", .method = HTTP_POST, .handler = restart_handler, .user_ctx = NULL
+  };
+  httpd_uri_t info_uri = {
+    .uri = "/info", .method = HTTP_GET, .handler = info_handler, .user_ctx = NULL
+  };
+  httpd_uri_t update_page_uri = {
+    .uri = "/update", .method = HTTP_GET, .handler = update_page_handler, .user_ctx = NULL
+  };
+  httpd_uri_t update_upload_uri = {
+    .uri = "/update", .method = HTTP_POST, .handler = update_upload_handler, .user_ctx = NULL
+  };
+
   ra_filter_init(&ra_filter, 20);
 
-  log_i("Starting web server on port: '%u'", config.server_port);
-  if (httpd_start(&camera_httpd, &config) == ESP_OK) {
+  log_i("Starting HTTPS server on port 443");
+  if (httpd_ssl_start(&camera_httpd, &ssl_cfg) == ESP_OK) {
     httpd_register_uri_handler(camera_httpd, &index_uri);
     httpd_register_uri_handler(camera_httpd, &cmd_uri);
     httpd_register_uri_handler(camera_httpd, &status_uri);
     httpd_register_uri_handler(camera_httpd, &capture_uri);
     httpd_register_uri_handler(camera_httpd, &bmp_uri);
-
     httpd_register_uri_handler(camera_httpd, &xclk_uri);
     httpd_register_uri_handler(camera_httpd, &reg_uri);
     httpd_register_uri_handler(camera_httpd, &greg_uri);
     httpd_register_uri_handler(camera_httpd, &pll_uri);
     httpd_register_uri_handler(camera_httpd, &win_uri);
+    httpd_register_uri_handler(camera_httpd, &cert_uri);
+    httpd_register_uri_handler(camera_httpd, &certkey_uri);
+    httpd_register_uri_handler(camera_httpd, &restart_uri);
+    httpd_register_uri_handler(camera_httpd, &info_uri);
+    httpd_register_uri_handler(camera_httpd, &update_page_uri);
+    httpd_register_uri_handler(camera_httpd, &update_upload_uri);
   }
 
-  config.server_port += 1;
-  config.ctrl_port += 1;
-  log_i("Starting stream server on port: '%u'", config.server_port);
-  if (httpd_start(&stream_httpd, &config) == ESP_OK) {
+  if (has_nvs) { free(nvs_cert); free(nvs_key); }
+
+  // Stream server stays on plain HTTP (SSL overhead is too high for MJPEG).
+  httpd_config_t stream_cfg = HTTPD_DEFAULT_CONFIG();
+  stream_cfg.server_port = 81;
+  stream_cfg.ctrl_port   = 32769;
+  log_i("Starting stream server on port 81 (HTTP)");
+  if (httpd_start(&stream_httpd, &stream_cfg) == ESP_OK) {
     httpd_register_uri_handler(stream_httpd, &stream_uri);
   }
 }
