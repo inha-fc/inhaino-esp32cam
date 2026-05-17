@@ -63,6 +63,11 @@ jobs:
           arduino-cli core update-index --additional-urls "$BOARD_URL"
           arduino-cli core install esp32:esp32 --additional-urls "$BOARD_URL"
 
+      - name: Generate default TLS certificate
+        run: |
+          chmod +x Scripts/gen_cert.sh
+          ./Scripts/gen_cert.sh
+
       - name: Compile sketch
         env:
           BOARD_URL: https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json

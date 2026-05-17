@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #include "Arduino.h"
-#include "esp_http_server.h"
+#include "esp_https_server.h"
 #include "esp_timer.h"
 #include "esp_camera.h"
 #include "img_converters.h"
@@ -23,7 +23,11 @@
 #include "camera_index.h"
 #include "board_config.h"
 #include "secrets.h"
+#include "default_cert.h"
 #include "mbedtls/base64.h"
+#include "nvs.h"
+
+#define TLS_NVS_NS "cam_tls"
 
 #if defined(ARDUINO_ARCH_ESP32) && defined(CONFIG_ARDUHAL_ESP_LOG)
 #include "esp32-hal-log.h"
@@ -722,9 +726,103 @@ static esp_err_t index_handler(httpd_req_t *req) {
   }
 }
 
+static bool tls_load_nvs(char **cert_out, char **key_out) {
+  nvs_handle_t nvs;
+  if (nvs_open(TLS_NVS_NS, NVS_READONLY, &nvs) != ESP_OK) return false;
+
+  size_t cert_len = 0, key_len = 0;
+  bool ok = nvs_get_str(nvs, "cert", NULL, &cert_len) == ESP_OK &&
+            nvs_get_str(nvs, "key",  NULL, &key_len)  == ESP_OK;
+  if (!ok) { nvs_close(nvs); return false; }
+
+  *cert_out = (char *)malloc(cert_len);
+  *key_out  = (char *)malloc(key_len);
+  ok = *cert_out && *key_out &&
+       nvs_get_str(nvs, "cert", *cert_out, &cert_len) == ESP_OK &&
+       nvs_get_str(nvs, "key",  *key_out,  &key_len)  == ESP_OK;
+  nvs_close(nvs);
+  if (!ok) { free(*cert_out); free(*key_out); }
+  return ok;
+}
+
+static bool tls_save_nvs(const char *cert, const char *key) {
+  nvs_handle_t nvs;
+  if (nvs_open(TLS_NVS_NS, NVS_READWRITE, &nvs) != ESP_OK) return false;
+  bool ok = nvs_set_str(nvs, "cert", cert) == ESP_OK &&
+            nvs_set_str(nvs, "key",  key)  == ESP_OK &&
+            nvs_commit(nvs) == ESP_OK;
+  nvs_close(nvs);
+  return ok;
+}
+
+static esp_err_t recv_body(httpd_req_t *req, char **out, size_t max_len) {
+  int len = req->content_len;
+  if (len <= 0 || (size_t)len > max_len) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid body size");
+    return ESP_FAIL;
+  }
+  char *buf = (char *)malloc(len + 1);
+  if (!buf) { httpd_resp_send_500(req); return ESP_FAIL; }
+  int got = httpd_req_recv(req, buf, len);
+  if (got <= 0) { free(buf); httpd_resp_send_500(req); return ESP_FAIL; }
+  buf[got] = '\0';
+  *out = buf;
+  return ESP_OK;
+}
+
+// POST /cert  — body: certificate PEM
+// POST /cert/key — body: private key PEM
+// Both together update NVS; device must restart to apply.
+static esp_err_t cert_handler(httpd_req_t *req) {
+  if (!check_auth(req)) return reject_auth(req);
+
+  char *body = NULL;
+  if (recv_body(req, &body, 4096) != ESP_OK) return ESP_FAIL;
+
+  bool is_key = strstr(req->uri, "/key") != NULL;
+
+  // Read the counterpart from NVS (or embedded default) to keep both in sync.
+  char *nvs_cert = NULL, *nvs_key = NULL;
+  bool had_nvs = tls_load_nvs(&nvs_cert, &nvs_key);
+  const char *cert_pem = had_nvs ? nvs_cert : DEFAULT_CERT_PEM;
+  const char *key_pem  = had_nvs ? nvs_key  : DEFAULT_KEY_PEM;
+
+  bool ok = is_key ? tls_save_nvs(cert_pem, body)
+                   : tls_save_nvs(body, key_pem);
+  if (had_nvs) { free(nvs_cert); free(nvs_key); }
+  free(body);
+
+  httpd_resp_set_type(req, "application/json");
+  if (!ok) return httpd_resp_send(req, "{\"result\":\"error\"}", -1);
+  return httpd_resp_send(req,
+    "{\"result\":\"ok\",\"note\":\"POST /restart to apply\"}", -1);
+}
+
+// POST /restart — graceful software reset
+static esp_err_t restart_handler(httpd_req_t *req) {
+  if (!check_auth(req)) return reject_auth(req);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, "{\"result\":\"ok\",\"note\":\"restarting\"}", -1);
+  vTaskDelay(500 / portTICK_PERIOD_MS);
+  esp_restart();
+  return ESP_OK;
+}
+
 void startCameraServer() {
-  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  config.max_uri_handlers = 16;
+  // Load TLS certificate from NVS; fall back to embedded default.
+  char *nvs_cert = NULL, *nvs_key = NULL;
+  bool has_nvs = tls_load_nvs(&nvs_cert, &nvs_key);
+  const char *active_cert = has_nvs ? nvs_cert : DEFAULT_CERT_PEM;
+  const char *active_key  = has_nvs ? nvs_key  : DEFAULT_KEY_PEM;
+
+  httpd_ssl_config_t ssl_cfg = HTTPD_SSL_CONFIG_DEFAULT();
+  ssl_cfg.httpd.max_uri_handlers = 20;
+  ssl_cfg.httpd.ctrl_port = 32768;
+  ssl_cfg.port_secure      = 443;
+  ssl_cfg.servercert       = (const uint8_t *)active_cert;
+  ssl_cfg.servercert_len   = strlen(active_cert) + 1;
+  ssl_cfg.prvtkey_pem      = (const uint8_t *)active_key;
+  ssl_cfg.prvtkey_len      = strlen(active_key) + 1;
 
   httpd_uri_t index_uri = {
     .uri = "/",
@@ -869,27 +967,43 @@ void startCameraServer() {
 #endif
   };
 
+  httpd_uri_t cert_uri = {
+    .uri = "/cert", .method = HTTP_POST, .handler = cert_handler, .user_ctx = NULL
+  };
+  httpd_uri_t certkey_uri = {
+    .uri = "/cert/key", .method = HTTP_POST, .handler = cert_handler, .user_ctx = NULL
+  };
+  httpd_uri_t restart_uri = {
+    .uri = "/restart", .method = HTTP_POST, .handler = restart_handler, .user_ctx = NULL
+  };
+
   ra_filter_init(&ra_filter, 20);
 
-  log_i("Starting web server on port: '%u'", config.server_port);
-  if (httpd_start(&camera_httpd, &config) == ESP_OK) {
+  log_i("Starting HTTPS server on port 443");
+  if (httpd_ssl_start(&camera_httpd, &ssl_cfg) == ESP_OK) {
     httpd_register_uri_handler(camera_httpd, &index_uri);
     httpd_register_uri_handler(camera_httpd, &cmd_uri);
     httpd_register_uri_handler(camera_httpd, &status_uri);
     httpd_register_uri_handler(camera_httpd, &capture_uri);
     httpd_register_uri_handler(camera_httpd, &bmp_uri);
-
     httpd_register_uri_handler(camera_httpd, &xclk_uri);
     httpd_register_uri_handler(camera_httpd, &reg_uri);
     httpd_register_uri_handler(camera_httpd, &greg_uri);
     httpd_register_uri_handler(camera_httpd, &pll_uri);
     httpd_register_uri_handler(camera_httpd, &win_uri);
+    httpd_register_uri_handler(camera_httpd, &cert_uri);
+    httpd_register_uri_handler(camera_httpd, &certkey_uri);
+    httpd_register_uri_handler(camera_httpd, &restart_uri);
   }
 
-  config.server_port += 1;
-  config.ctrl_port += 1;
-  log_i("Starting stream server on port: '%u'", config.server_port);
-  if (httpd_start(&stream_httpd, &config) == ESP_OK) {
+  if (has_nvs) { free(nvs_cert); free(nvs_key); }
+
+  // Stream server stays on plain HTTP (SSL overhead is too high for MJPEG).
+  httpd_config_t stream_cfg = HTTPD_DEFAULT_CONFIG();
+  stream_cfg.server_port = 81;
+  stream_cfg.ctrl_port   = 32769;
+  log_i("Starting stream server on port 81 (HTTP)");
+  if (httpd_start(&stream_httpd, &stream_cfg) == ESP_OK) {
     httpd_register_uri_handler(stream_httpd, &stream_uri);
   }
 }

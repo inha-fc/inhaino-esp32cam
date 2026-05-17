@@ -183,9 +183,9 @@ void setup() {
 
   startCameraServer();
 
-  Serial.print("Camera Ready! Use 'http://");
+  Serial.print("Camera Ready! Use 'https://");
   Serial.print(WiFi.localIP());
-  Serial.println("' to connect");
+  Serial.println("' to connect (accept self-signed cert warning)");
 
   mqtt.setServer(MQTT_BROKER, MQTT_PORT);
   mqtt.setCallback(mqtt_callback);

@@ -264,6 +264,65 @@ git update-index --skip-worktree CameraWebServer/secrets.h
 
 ---
 
+## HTTPS Setup
+
+### 1. 인증서 생성 (최초 1회)
+
+```sh
+./Scripts/gen_cert.sh
+```
+
+openssl로 자체 서명 인증서를 생성하여 `CameraWebServer/default_cert.h`에 저장합니다.  
+이 파일은 `.gitignore`에 포함되어 있으므로 클론 후 반드시 실행하세요.
+
+> CI(GitHub Actions)는 빌드 전 자동으로 실행합니다.
+
+### 2. 브라우저 접속
+
+```
+https://192.168.x.x/
+```
+
+자체 서명 인증서이므로 첫 접속 시 브라우저 경고가 표시됩니다.  
+**"고급 → 계속 진행"** 을 선택해 접속합니다.
+
+> 경고 없이 사용하려면 자신만의 CA를 만들어 브라우저에 등록하거나,  
+> 아래 인증서 업데이트 절차로 교체하세요.
+
+### 3. 인증서 업데이트 (선택)
+
+기존 인증서를 교체하려면 새 인증서와 키를 따로 업로드한 후 재시작합니다.
+
+```sh
+# 새 인증서 생성
+openssl req -x509 -nodes -newkey rsa:2048 \
+  -keyout new_key.pem -out new_cert.pem -days 3650 -subj "/CN=esp32cam"
+
+# 인증서 업로드
+curl -k -u admin:changeme \
+  -X POST --data-binary @new_cert.pem \
+  https://192.168.x.x/cert
+
+# 키 업로드
+curl -k -u admin:changeme \
+  -X POST --data-binary @new_key.pem \
+  https://192.168.x.x/cert/key
+
+# 재시작 적용
+curl -k -u admin:changeme -X POST https://192.168.x.x/restart
+```
+
+새 인증서는 NVS에 저장되므로 이후 재시작에도 유지됩니다.
+
+### 포트 구성
+
+| 포트 | 프로토콜 | 용도 |
+|---|---|---|
+| 443 | HTTPS | 웹 UI, REST API, 인증서 관리 |
+| 81 | HTTP | MJPEG 스트리밍 (SSL 오버헤드로 HTTP 유지) |
+
+---
+
 ## Security
 
 카메라 웹 서버는 HTTP Basic Authentication으로 보호됩니다.
