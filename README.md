@@ -1,21 +1,40 @@
-# inhaino-esp32cam
+# InhaIno ESP32 CAM
 
 [![Build](https://github.com/inha-fc/inhaino-esp32cam/actions/workflows/build.yml/badge.svg)](https://github.com/inha-fc/inhaino-esp32cam/actions/workflows/build.yml)
+[![Arduino IDE](https://img.shields.io/badge/branch-arduino--ide-blue?logo=arduino)](https://github.com/inha-fc/inhaino-esp32cam/tree/arduino-ide)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ESP32-CAM 기반의 Wi-Fi 카메라 웹 서버 프로젝트입니다.  
-브라우저에서 실시간 영상 스트리밍을 확인할 수 있습니다.
+브라우저에서 실시간 영상 스트리밍과 카메라 설정을 제어할 수 있습니다.
+
+---
+
+## Branches
+
+| 브랜치 | 용도 |
+|---|---|
+| `main` | 소스 코드, 웹 UI 편집, CI 설정 |
+| `arduino-ide` | Arduino IDE에서 바로 열 수 있는 자동 빌드 결과물 |
+
+`main`에 push하면 `arduino-ide` 브랜치가 자동으로 업데이트됩니다.
+
+```sh
+# Arduino IDE용 브랜치 바로 클론
+git clone -b arduino-ide https://github.com/inha-fc/inhaino-esp32cam.git
+```
 
 ---
 
 ## Features
 
 - 실시간 MJPEG 스트리밍
-- 브라우저 기반 카메라 컨트롤 UI (해상도, 밝기, 채도 등)
+- 브라우저 기반 카메라 컨트롤 UI (해상도, 밝기, 채도, 화이트밸런스 등)
+- 센서 자동 감지 및 전용 UI 제공 (OV2640 / OV3660 / OV5640)
 - PSRAM 유무에 따른 자동 화질 조절
-- 센서 자동 감지 (OV2640 / OV3660 / OV5640)
 - LED 플래시 지원 (핀 정의 시 자동 활성화)
 - Wi-Fi 인증정보 분리 관리 (`secrets.h`)
-- GitHub Actions를 통한 멀티 보드 빌드 검증
+- GitHub Actions 멀티 보드 빌드 검증 (ESP32 / S2 / S3, PSRAM on/off)
+- `arduino-ide` 브랜치 자동 배포
 
 ---
 
@@ -25,7 +44,7 @@ ESP32-CAM 기반의 Wi-Fi 카메라 웹 서버 프로젝트입니다.
 
 | 보드 | PSRAM |
 |---|:---:|
-| AI Thinker ESP32-CAM *(기본값)* | ✓ |
+| **AI Thinker ESP32-CAM** *(기본값)* | ✓ |
 | ESP-EYE | ✓ |
 | ESP32-S3 EYE | ✓ |
 | M5Stack PSRAM | ✓ |
@@ -44,26 +63,27 @@ ESP32-CAM 기반의 Wi-Fi 카메라 웹 서버 프로젝트입니다.
 inhaino-esp32cam/
 ├── .github/
 │   └── workflows/
-│       └── build.yml         # GitHub Actions 빌드 워크플로우
-├── CameraWebServer/           # Arduino 스케치 폴더
-│   ├── CameraWebServer.ino    # 메인 스케치 (Wi-Fi 연결, 카메라 초기화)
-│   ├── app_httpd.cpp          # HTTP 서버 및 스트리밍 핸들러
-│   ├── board_config.h         # 카메라 모델 선택
-│   ├── camera_index.h         # 웹 UI (gzip 인코딩된 HTML)
-│   ├── camera_pins.h          # 보드별 GPIO 핀 정의
-│   ├── ci.yml                 # 빌드 매트릭스 정의 (FQBN 목록)
-│   ├── partitions.csv         # 커스텀 파티션 테이블
-│   ├── secrets.h              # Wi-Fi 인증정보 (git 변경 추적 제외)
-│   └── secrets.h.example      # 인증정보 템플릿
+│       ├── build.yml                # 멀티 보드 빌드 검증
+│       └── deploy-arduino-ide.yml   # arduino-ide 브랜치 자동 배포
+├── CameraWebServer/                  # Arduino 스케치 폴더
+│   ├── CameraWebServer.ino           # 메인 스케치
+│   ├── app_httpd.cpp                 # HTTP 서버 및 스트리밍 핸들러
+│   ├── board_config.h                # 카메라 모델 선택
+│   ├── camera_index.h                # 웹 UI (gzip 인코딩된 HTML)
+│   ├── camera_pins.h                 # 보드별 GPIO 핀 정의
+│   ├── ci.yml                        # 빌드 매트릭스 정의 (FQBN 목록)
+│   ├── partitions.csv                # 커스텀 파티션 테이블
+│   ├── secrets.h                     # Wi-Fi 인증정보 (변경사항 추적 제외)
+│   └── secrets.h.example             # 인증정보 템플릿
 ├── Scripts/
-│   ├── extract_html.sh        # camera_index.h → index/*.html 추출
-│   └── pack_html.sh           # index/*.html → camera_index.h 재생성
+│   ├── extract_html.sh               # camera_index.h → index/*.html 추출
+│   └── pack_html.sh                  # index/*.html → camera_index.h 재생성
 ├── index/
 │   ├── common/
-│   │   └── style.css          # 센서 공통 CSS
-│   ├── ov2640.html            # OV2640 웹 UI 소스
-│   ├── ov3660.html            # OV3660 웹 UI 소스
-│   └── ov5640.html            # OV5640 웹 UI 소스
+│   │   └── style.css                 # 센서 공통 CSS
+│   ├── ov2640.html                   # OV2640 웹 UI 소스
+│   ├── ov3660.html                   # OV3660 웹 UI 소스
+│   └── ov5640.html                   # OV5640 웹 UI 소스
 ├── .gitignore
 ├── LICENSE
 └── README.md
@@ -111,7 +131,7 @@ git update-index --skip-worktree CameraWebServer/secrets.h
 `File → Preferences → Additional boards manager URLs`에 추가:
 
 ```
-https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+https://espressif.github.io/arduino-esp32/package_esp32_index.json
 ```
 
 `Tools → Board → Boards Manager`에서 **esp32 by Espressif Systems** 설치.
@@ -185,24 +205,36 @@ vi index/common/style.css   # 세 센서 공통 적용
 ```
 
 `index/ov*.html` 내에서 `<!-- @include common/style.css -->` 마커를 사용하면  
-`pack_html.sh`가 자동으로 공통 파일을 합쳐서 압축합니다.
+`pack_html.sh`가 공통 파일을 자동으로 합쳐서 압축합니다.
 
 ---
 
 ## CI / GitHub Actions
 
-`CameraWebServer/ci.yml`에 정의된 FQBN 목록을 기반으로 멀티 보드 빌드를 자동 실행합니다.
+### Build
+
+`CameraWebServer/ci.yml`의 FQBN 목록으로 멀티 보드 빌드를 자동 실행합니다.
 
 ```
-push / PR (CameraWebServer/** 변경 시)
+push / PR → CameraWebServer/** 변경 감지
   └─ generate-matrix : ci.yml 파싱 → 7개 빌드 타겟 생성
   └─ build (7개 병렬)
-       ├─ espressif:esp32:esp32       (PSRAM on / off)
-       ├─ espressif:esp32:esp32s2     (PSRAM on / off)
-       └─ espressif:esp32:esp32s3     (OPI / enabled / disabled)
+       ├─ esp32:esp32:esp32   (PSRAM on / off)
+       ├─ esp32:esp32:esp32s2 (PSRAM on / off)
+       └─ esp32:esp32:esp32s3 (OPI / enabled / disabled)
 ```
 
-빌드 대상을 추가하려면 `CameraWebServer/ci.yml`의 `fqbn` 항목에 FQBN을 추가하면 됩니다.
+빌드 타겟 추가는 `CameraWebServer/ci.yml`의 `fqbn` 항목에 FQBN을 추가하면 됩니다.
+
+### Deploy
+
+`CameraWebServer/**`, `index/**`, `Scripts/**` 변경 시 `arduino-ide` 브랜치를 자동으로 업데이트합니다.
+
+```
+push → main
+  └─ pack_html.sh 실행 (index/ → camera_index.h 빌드)
+  └─ arduino-ide 브랜치에 CameraWebServer/ 배포
+```
 
 ---
 
@@ -213,7 +245,6 @@ push / PR (CameraWebServer/** 변경 시)
 | `CameraWebServer/secrets.h` | 최초 1회 | 실제 Wi-Fi 인증정보 |
 | `CameraWebServer/secrets.h.example` | 항상 | 팀원용 템플릿 |
 
-`CameraWebServer/secrets.h`는 `.gitignore`에 등록되어 있습니다.  
 초기 커밋 이후 로컬 변경사항이 추적되지 않으려면 아래 명령어를 실행하세요.
 
 ```sh
