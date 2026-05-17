@@ -63,6 +63,9 @@ jobs:
           arduino-cli core update-index --additional-urls "$BOARD_URL"
           arduino-cli core install esp32:esp32 --additional-urls "$BOARD_URL"
 
+      - name: Install Arduino libraries
+        run: arduino-cli lib install "PubSubClient"
+
       - name: Generate default TLS certificate
         run: |
           chmod +x Scripts/gen_cert.sh
