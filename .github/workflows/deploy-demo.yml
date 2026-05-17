@@ -1,0 +1,55 @@
+name: Deploy Demo (GitHub Pages)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'index/**'
+      - 'Scripts/build_demo.sh'
+      - '.github/workflows/deploy-demo.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build demo HTML
+        run: |
+          chmod +x Scripts/build_demo.sh
+          ./Scripts/build_demo.sh /tmp/demo_out
+
+      - name: Push to demo branch
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          MAIN_SHA=$(git rev-parse --short HEAD)
+
+          git fetch origin demo 2>/dev/null \
+            && git checkout -f demo \
+            || git checkout --orphan demo
+
+          git rm -rf . --quiet 2>/dev/null || true
+
+          cp -r /tmp/demo_out/. .
+
+          # Disable Jekyll so GitHub Pages serves files as-is
+          touch .nojekyll
+
+          git add .
+
+          if git diff --cached --quiet; then
+            echo "No changes — skipping deploy."
+          else
+            git commit -m "demo: build from main@${MAIN_SHA}"
+            git push origin demo
+          fi
