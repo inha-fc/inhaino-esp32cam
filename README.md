@@ -1,15 +1,68 @@
-# InhaIno ESP32 CAM
+# InhaIno — ESP32-CAM 펌웨어
+
+> 인하대학교 소프트웨어융합공학과 IoT프로그래밍 팀 프로젝트  
+> 팀명: InhaIno | 이종영(12233771) · 이상호(12223429)
 
 [![Build](https://github.com/inha-fc/inhaino-esp32cam/actions/workflows/build.yml/badge.svg)](https://github.com/inha-fc/inhaino-esp32cam/actions/workflows/build.yml)
 [![Arduino IDE](https://img.shields.io/badge/branch-arduino--ide-blue?logo=arduino)](https://github.com/inha-fc/inhaino-esp32cam/tree/arduino-ide)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-ESP32-CAM 기반의 Wi-Fi 카메라 웹 서버 프로젝트입니다.  
-브라우저에서 실시간 영상 스트리밍과 카메라 설정을 제어할 수 있습니다.
+지하철 부정승차 방지 IoT 인증 시스템의 **촬영·스트리밍** 펌웨어입니다.  
+Arduino R4 WiFi의 촬영 트리거 요청에 응답하고, 등록 모드에서는 서버 명령으로 자동 촬영하여 이미지를 전송합니다.
 
 ---
 
-## Branches
+## 인하이노 연동
+
+### 촬영 파이프라인 (검증 모드)
+
+```
+[Arduino R4 WiFi]
+    └─ HTTP GET :81/inhaino/capture ──→ [ESP32-CAM]
+                                             └─ {"img_url":"http://<cam_ip>:81/inhaino/jpeg"}
+
+[Flask 서버]
+    └─ HTTP GET :81/inhaino/jpeg ──→ [ESP32-CAM]
+                                         └─ binary JPEG → 얼굴 대조
+```
+
+### 촬영 파이프라인 (등록 모드)
+
+```
+[Mosquitto 브로커]
+    └─ MQTT gate/esp32cam-1/capture → [ESP32-CAM]
+                                          └─ 촬영 후 POST /register/stage-image → [Flask 서버]
+```
+
+### InhaIno 전용 엔드포인트 (포트 81, HTTP, 인증 불필요)
+
+| 메서드 | 경로 | 설명 | 응답 |
+|---|---|---|---|
+| GET | `/inhaino/capture` | 촬영 트리거 + img_url 반환 | `{"img_url":"http://<ip>:81/inhaino/jpeg"}` |
+| GET | `/inhaino/jpeg` | 최신 프레임 스냅샷 | `image/jpeg` |
+
+> Arduino R4 WiFi는 SSL을 지원하지 않으므로 InhaIno 전용 엔드포인트는 HTTP 포트(81)에 위치합니다.
+
+### InhaIno MQTT 토픽
+
+| 방향 | 토픽 | 페이로드 | 설명 |
+|---|---|---|---|
+| Subscribe | `gate/{CLIENT_ID}/capture` | `AABBCCDD` (card_id) | 서버 → CAM 촬영 명령 |
+| Publish | `cam/{CLIENT_ID}/status` | JSON | 카메라 상태 (retained) |
+| Publish LWT | `cam/{CLIENT_ID}/online` | `1` / `0` | 연결 상태 (retained) |
+| Subscribe | `cam/{CLIENT_ID}/cmd` | JSON | 카메라 설정 명령 (기존) |
+
+### Heartbeat
+
+30초마다 Flask 서버에 장치 생존 신호를 전송합니다.
+
+```
+POST /heartbeat  {"device_id":"esp32cam-1"}
+```
+
+---
+
+## 브랜치 구조
 
 | 브랜치 | 용도 |
 |---|---|
@@ -25,24 +78,23 @@ git clone -b arduino-ide https://github.com/inha-fc/inhaino-esp32cam.git
 
 ---
 
-## Features
+## 주요 기능
 
 - 실시간 MJPEG 스트리밍
 - 브라우저 기반 카메라 컨트롤 UI (해상도, 밝기, 채도, 화이트밸런스 등)
 - 센서 자동 감지 및 전용 UI 제공 (OV2640 / OV3660 / OV5640)
 - PSRAM 유무에 따른 자동 화질 조절
 - LED 플래시 지원 (핀 정의 시 자동 활성화)
-- Wi-Fi 인증정보 및 카메라 접속 계정 분리 관리 (`secrets.h`)
-- HTTP Basic Auth 기반 인증 (전체 엔드포인트 보호)
-- HTTPS (포트 443) + mDNS (`esp32cam-1.local`)
+- HTTP Basic Auth 기반 인증 (웹 UI · REST API 보호)
+- HTTPS (포트 443) + HTTP 스트리밍 (포트 81) + mDNS (`esp32cam-1.local`)
 - REST API (JSON 응답) + MQTT / MQTTS 통신 지원
 - OTA 펌웨어 업데이트 (브라우저에서 `.bin` 업로드)
+- 인하이노 연동: `/inhaino/capture` · `/inhaino/jpeg` 엔드포인트, 서버 heartbeat
 - GitHub Actions 멀티 보드 빌드 검증 (ESP32 / S2 / S3, PSRAM on/off)
-- `arduino-ide` 브랜치 자동 배포
 
 ---
 
-## Supported Boards
+## 지원 보드
 
 `CameraWebServer/board_config.h`에서 사용할 보드를 주석 해제하여 선택합니다.
 
@@ -61,7 +113,7 @@ git clone -b arduino-ide https://github.com/inha-fc/inhaino-esp32cam.git
 
 ---
 
-## Project Structure
+## 펌웨어 구조
 
 ```
 inhaino-esp32cam/
@@ -70,15 +122,15 @@ inhaino-esp32cam/
 │       ├── build.yml                # 멀티 보드 빌드 검증
 │       └── deploy-arduino-ide.yml   # arduino-ide 브랜치 자동 배포
 ├── CameraWebServer/                  # Arduino 스케치 폴더
-│   ├── CameraWebServer.ino           # 메인 스케치
-│   ├── app_httpd.cpp                 # HTTP 서버 및 스트리밍 핸들러
+│   ├── CameraWebServer.ino           # 메인 스케치 (MQTT, heartbeat, InhaIno 연동)
+│   ├── app_httpd.cpp                 # HTTP 핸들러 (capture, stream, /inhaino/*)
 │   ├── board_config.h                # 카메라 모델 선택
 │   ├── camera_index.h                # 웹 UI (gzip 인코딩된 HTML)
 │   ├── camera_pins.h                 # 보드별 GPIO 핀 정의
 │   ├── ci.yml                        # 빌드 매트릭스 정의 (FQBN 목록)
 │   ├── partitions.csv                # 커스텀 파티션 테이블
-│   ├── secrets.h                     # Wi-Fi 인증정보 (변경사항 추적 제외)
-│   └── secrets.h.example             # 인증정보 템플릿
+│   ├── secrets.h                     # Wi-Fi · MQTT · 서버 설정 (변경사항 추적 제외)
+│   └── secrets.h.example             # 설정 템플릿
 ├── Scripts/
 │   ├── extract_html.sh               # camera_index.h → index/*.html 추출
 │   └── pack_html.sh                  # index/*.html → camera_index.h 재생성
@@ -88,14 +140,12 @@ inhaino-esp32cam/
 │   ├── ov2640.html                   # OV2640 웹 UI 소스
 │   ├── ov3660.html                   # OV3660 웹 UI 소스
 │   └── ov5640.html                   # OV5640 웹 UI 소스
-├── .gitignore
-├── LICENSE
 └── README.md
 ```
 
 ---
 
-## Getting Started
+## 개발 환경 설정
 
 ### 1. 저장소 클론
 
@@ -104,13 +154,22 @@ git clone https://github.com/inha-fc/inhaino-esp32cam.git
 cd inhaino-esp32cam
 ```
 
-### 2. Wi-Fi 인증정보 설정
+### 2. 설정 파일 편집
 
 `CameraWebServer/secrets.h`를 편집합니다.
 
 ```cpp
-#define WIFI_SSID     "your_ssid_here"
-#define WIFI_PASSWORD "your_password_here"
+#define WIFI_SSID           "your_ssid_here"
+#define WIFI_PASSWORD       "your_password_here"
+#define CAMERA_AUTH_USER    "admin"
+#define CAMERA_AUTH_PASS    "changeme"       // 반드시 변경
+
+#define MQTT_BROKER         "192.168.1.x"
+#define MQTT_PORT           1883
+#define MQTT_CLIENT_ID      "esp32cam-1"    // devices.json 등록 ID와 일치해야 함
+
+#define INHAINO_SERVER_IP   "192.168.1.100" // Flask 서버 IP
+#define INHAINO_SERVER_PORT 58080
 ```
 
 수정 후 git이 변경사항을 추적하지 않도록 설정:
@@ -130,7 +189,7 @@ git update-index --skip-worktree CameraWebServer/secrets.h
 
 ### 4. 빌드 및 업로드
 
-#### 보드 매니저 설치 (최초 1회)
+#### 보드 패키지 설치 (최초 1회)
 
 `File → Preferences → Additional boards manager URLs`에 추가:
 
@@ -179,7 +238,7 @@ IO0      →   GND  ← 업로드 모드 진입용
 
 ---
 
-## Usage
+## 초기 접속
 
 업로드 완료 후 `Tools → Serial Monitor`를 열고 baud rate를 **115200**으로 설정하면 IP 주소가 출력됩니다.
 
@@ -192,7 +251,7 @@ Camera Ready! Use 'http://192.168.x.x' to connect
 
 ---
 
-## Customizing Web UI
+## 웹 UI 커스터마이징
 
 웹 UI HTML은 `index/` 폴더에서 관리합니다.
 
@@ -213,206 +272,28 @@ vi index/common/style.css   # 세 센서 공통 적용
 
 ---
 
-## CI / GitHub Actions
-
-### Build
-
-`CameraWebServer/ci.yml`의 FQBN 목록으로 멀티 보드 빌드를 자동 실행합니다.
-
-```
-push / PR → CameraWebServer/** 변경 감지
-  └─ generate-matrix : ci.yml 파싱 → 7개 빌드 타겟 생성
-  └─ build (7개 병렬)
-       ├─ esp32:esp32:esp32   (PSRAM on / off)
-       ├─ esp32:esp32:esp32s2 (PSRAM on / off)
-       └─ esp32:esp32:esp32s3 (OPI / enabled / disabled)
-```
-
-빌드 타겟 추가는 `CameraWebServer/ci.yml`의 `fqbn` 항목에 FQBN을 추가하면 됩니다.
-
-### Deploy
-
-`CameraWebServer/**`, `index/**`, `Scripts/**` 변경 시 `arduino-ide` 브랜치를 자동으로 업데이트합니다.
-
-```
-push → main
-  └─ pack_html.sh 실행 (index/ → camera_index.h 빌드)
-  └─ arduino-ide 브랜치에 CameraWebServer/ 배포
-```
-
----
-
-## Credential Management
-
-| 파일 | git 추적 | 용도 |
-|---|:---:|---|
-| `CameraWebServer/secrets.h` | 최초 1회 | 실제 Wi-Fi 인증정보 및 카메라 계정 |
-| `CameraWebServer/secrets.h.example` | 항상 | 팀원용 템플릿 |
-
-`secrets.h`에서 Wi-Fi와 카메라 접속 계정을 함께 관리합니다.
-
-```cpp
-#define WIFI_SSID        "your_ssid_here"
-#define WIFI_PASSWORD    "your_password_here"
-#define CAMERA_AUTH_USER "admin"           // 카메라 웹 UI 로그인 ID
-#define CAMERA_AUTH_PASS "changeme"        // 카메라 웹 UI 로그인 PW (강력한 값으로 변경)
-```
-
-초기 커밋 이후 로컬 변경사항이 추적되지 않으려면 아래 명령어를 실행하세요.
-
-```sh
-git update-index --skip-worktree CameraWebServer/secrets.h
-```
-
----
-
-## mDNS
-
-Wi-Fi 연결 후 아래 주소로 IP 없이 접속할 수 있습니다.
-
-```
-https://esp32cam-1.local/
-```
-
-`MQTT_CLIENT_ID`가 mDNS 호스트명으로 사용됩니다. 같은 네트워크의 macOS · Linux · Windows(10 이상)에서 동작합니다.
-
----
-
-## OTA Firmware Update
-
-펌웨어를 USB 연결 없이 Wi-Fi로 업데이트합니다.
-
-```
-https://192.168.x.x/update
-```
-
-브라우저에서 위 주소에 접속하면 `.bin` 파일 업로드 폼이 표시됩니다.  
-업로드 완료 후 자동으로 재시작됩니다.
-
-**curl 예시**
-
-```sh
-curl -k -u admin:changeme \
-  -X POST --data-binary @firmware.bin \
-  -H "Content-Type: application/octet-stream" \
-  https://192.168.x.x/update
-```
-
-> Arduino IDE에서 `.bin` 파일 생성: `Sketch → Export Compiled Binary`
-
----
-
-## System Info
-
-```sh
-curl -k -u admin:changeme https://192.168.x.x/info
-```
-
-```json
-{
-  "ip": "192.168.1.42",
-  "rssi": -55,
-  "uptime_s": 3600,
-  "heap_free": 180000,
-  "heap_min": 160000,
-  "sensor_pid": "0x2642"
-}
-```
-
----
-
-## HTTPS Setup
-
-### 1. 인증서 생성 (최초 1회)
-
-```sh
-./Scripts/gen_cert.sh
-```
-
-openssl로 자체 서명 인증서를 생성하여 `CameraWebServer/default_cert.h`에 저장합니다.  
-이 파일은 `.gitignore`에 포함되어 있으므로 클론 후 반드시 실행하세요.
-
-> CI(GitHub Actions)는 빌드 전 자동으로 실행합니다.
-
-### 2. 브라우저 접속
-
-```
-https://192.168.x.x/
-```
-
-자체 서명 인증서이므로 첫 접속 시 브라우저 경고가 표시됩니다.  
-**"고급 → 계속 진행"** 을 선택해 접속합니다.
-
-> 경고 없이 사용하려면 자신만의 CA를 만들어 브라우저에 등록하거나,  
-> 아래 인증서 업데이트 절차로 교체하세요.
-
-### 3. 인증서 업데이트 (선택)
-
-기존 인증서를 교체하려면 새 인증서와 키를 따로 업로드한 후 재시작합니다.
-
-```sh
-# 새 인증서 생성
-openssl req -x509 -nodes -newkey rsa:2048 \
-  -keyout new_key.pem -out new_cert.pem -days 3650 -subj "/CN=esp32cam"
-
-# 인증서 업로드
-curl -k -u admin:changeme \
-  -X POST --data-binary @new_cert.pem \
-  https://192.168.x.x/cert
-
-# 키 업로드
-curl -k -u admin:changeme \
-  -X POST --data-binary @new_key.pem \
-  https://192.168.x.x/cert/key
-
-# 재시작 적용
-curl -k -u admin:changeme -X POST https://192.168.x.x/restart
-```
-
-새 인증서는 NVS에 저장되므로 이후 재시작에도 유지됩니다.
-
-### 포트 구성
-
-| 포트 | 프로토콜 | 용도 |
-|---|---|---|
-| 443 | HTTPS | 웹 UI, REST API, 인증서 관리 |
-| 81 | HTTP | MJPEG 스트리밍 (SSL 오버헤드로 HTTP 유지) |
-
----
-
-## Security
-
-카메라 웹 서버는 HTTP Basic Authentication으로 보호됩니다.
-
-- 브라우저에서 IP 주소 접속 시 ID/PW 입력 팝업이 표시됩니다.
-- 이후 API 호출(`/control`, `/capture`, `/status` 등)에는 자격증명이 자동으로 포함됩니다.
-- 실시간 스트림(`/stream`, 포트 81)은 브라우저 `<img>` 태그 제한으로 별도 팝업이 뜰 수 있습니다.
-
-> **주의**: `CAMERA_AUTH_PASS`의 기본값 `changeme`은 반드시 변경하세요.
-
----
-
 ## REST API
 
-모든 요청에는 HTTP Basic Auth 헤더가 필요합니다.
+### 웹 UI · 관리 엔드포인트 (포트 443, HTTPS, Basic Auth 필요)
 
 | 메서드 | 경로 | 설명 | 응답 |
 |---|---|---|---|
 | GET | `/status` | 카메라 전체 상태 조회 | JSON |
 | GET | `/control?var=X&val=Y` | 카메라 설정 변경 | JSON |
-| GET | `/capture` | JPEG 스냅샷 캡처 | image/jpeg |
+| GET | `/capture` | JPEG 스냅샷 | `image/jpeg` |
 | GET | `/stream` | MJPEG 실시간 스트림 (포트 81) | multipart |
+| GET | `/info` | 시스템 정보 (IP, RSSI, 힙, 가동시간) | JSON |
+| GET/POST | `/update` | OTA 업데이트 페이지 / 펌웨어 업로드 | — |
+| POST | `/cert` | TLS 인증서 PEM 업로드 | — |
+| POST | `/cert/key` | TLS 개인키 PEM 업로드 | — |
+| POST | `/restart` | 소프트웨어 재시작 | — |
 
-**전체 엔드포인트**
+### InhaIno 전용 엔드포인트 (포트 81, HTTP, 인증 불필요)
 
-| 메서드 | 경로 | 설명 |
-|---|---|---|
-| GET | `/info` | 시스템 정보 (IP, RSSI, 힙, 가동시간) |
-| GET | `/update` | OTA 업데이트 페이지 |
-| POST | `/update` | 펌웨어 바이너리 업로드 (Content-Type: application/octet-stream) |
-| POST | `/cert` | TLS 인증서 PEM 업로드 |
-| POST | `/cert/key` | TLS 개인키 PEM 업로드 |
-| POST | `/restart` | 소프트웨어 재시작 |
+| 메서드 | 경로 | 설명 | 응답 |
+|---|---|---|---|
+| GET | `/inhaino/capture` | 촬영 트리거 + img_url 반환 | `{"img_url":"http://<ip>:81/inhaino/jpeg"}` |
+| GET | `/inhaino/jpeg` | 최신 프레임 스냅샷 | `image/jpeg` |
 
 **`/control` 변수 목록**
 
@@ -433,11 +314,11 @@ curl -k -u admin:changeme -X POST https://192.168.x.x/restart
 
 ```sh
 # 밝기 +1 설정
-curl -u admin:changeme "http://192.168.x.x/control?var=brightness&val=1"
-# → {"result":"ok"}
+curl -u admin:changeme "https://192.168.x.x/control?var=brightness&val=1"
 
-# 스냅샷 저장
-curl -u admin:changeme "http://192.168.x.x/capture" -o capture.jpg
+# InhaIno 촬영 트리거 (인증 불필요)
+curl "http://192.168.x.x:81/inhaino/capture"
+# → {"img_url":"http://192.168.x.x:81/inhaino/jpeg"}
 ```
 
 ---
@@ -448,9 +329,18 @@ curl -u admin:changeme "http://192.168.x.x/capture" -o capture.jpg
 
 Arduino IDE → `Tools → Manage Libraries` → **PubSubClient** by Nick O'Leary 설치
 
-### 설정
+### 토픽 전체 명세
 
-`secrets.h`에서 브로커 정보를 입력합니다.
+| 방향 | 토픽 | 페이로드 | 설명 |
+|---|---|---|---|
+| Subscribe | `cam/{CLIENT_ID}/cmd` | `{"var":"X","val":Y}` | 카메라 설정 명령 |
+| Subscribe | `gate/{CLIENT_ID}/capture` | `AABBCCDD` (card_id) | 인하이노 촬영 명령 |
+| Publish | `cam/{CLIENT_ID}/status` | JSON | 카메라 상태 (retained) |
+| Publish LWT | `cam/{CLIENT_ID}/online` | `1` / `0` | 연결 상태 (retained) |
+
+`gate/{CLIENT_ID}/capture` 수신 시: 촬영 후 Flask 서버 `/register/stage-image`에 multipart POST
+
+### 설정 (`secrets.h`)
 
 ```cpp
 #define MQTT_BROKER    "192.168.1.x"
@@ -460,33 +350,14 @@ Arduino IDE → `Tools → Manage Libraries` → **PubSubClient** by Nick O'Lear
 #define MQTT_CLIENT_ID "esp32cam-1"
 ```
 
-### 토픽 구조
+### mosquitto 테스트 예시
 
-| 방향 | 토픽 | 페이로드 | 설명 |
-|---|---|---|---|
-| Subscribe | `cam/{CLIENT_ID}/cmd` | JSON | 카메라 설정 명령 수신 |
-| Publish | `cam/{CLIENT_ID}/status` | JSON | 카메라 상태 (retained) |
-| Publish LWT | `cam/{CLIENT_ID}/online` | `1` / `0` | 연결 상태 (retained) |
+```sh
+# 촬영 명령 전송 (등록 모드)
+mosquitto_pub -h 192.168.1.x -t "gate/esp32cam-1/capture" -m "AABBCCDD"
 
-### 명령 페이로드 형식
-
-```json
-{"var": "brightness", "val": 1}
-```
-
-명령 수신 후 자동으로 `status` 토픽에 최신 상태가 발행됩니다.
-
-### 상태 페이로드 예시
-
-```json
-{
-  "ip": "192.168.1.42",
-  "framesize": 5,
-  "quality": 10,
-  "brightness": 0,
-  "contrast": 0,
-  "saturation": 0
-}
+# 상태 구독
+mosquitto_sub -h 192.168.1.x -t "cam/esp32cam-1/status"
 ```
 
 ### MQTT over TLS (MQTTS)
@@ -494,19 +365,110 @@ Arduino IDE → `Tools → Manage Libraries` → **PubSubClient** by Nick O'Lear
 `secrets.h`에서 `MQTT_TLS 1`로 변경하면 포트 8883으로 암호화 연결합니다.  
 브로커 인증서 검증은 생략하고 암호화만 적용합니다 (사설 브로커 대상).
 
-### mosquitto 테스트 예시
+---
 
-```sh
-# 명령 전송 (밝기 +2)
-mosquitto_pub -h 192.168.1.x -t "cam/esp32cam-1/cmd" \
-  -m '{"var":"brightness","val":2}'
+## CI / GitHub Actions
 
-# 상태 구독
-mosquitto_sub -h 192.168.1.x -t "cam/esp32cam-1/status"
+### 빌드 검증
+
+`CameraWebServer/ci.yml`의 FQBN 목록으로 멀티 보드 빌드를 자동 실행합니다.
+
+```
+push / PR → CameraWebServer/** 변경 감지
+  └─ generate-matrix : ci.yml 파싱 → 빌드 타겟 생성
+  └─ build (병렬)
+       ├─ esp32:esp32:esp32   (PSRAM on / off)
+       ├─ esp32:esp32:esp32s2 (PSRAM on / off)
+       └─ esp32:esp32:esp32s3 (OPI / enabled / disabled)
+```
+
+### 자동 배포
+
+`CameraWebServer/**`, `index/**`, `Scripts/**` 변경 시 `arduino-ide` 브랜치를 자동으로 업데이트합니다.
+
+```
+push → main
+  └─ pack_html.sh 실행 (index/ → camera_index.h 빌드)
+  └─ arduino-ide 브랜치에 CameraWebServer/ 배포
 ```
 
 ---
 
-## License
+## HTTPS 설정
+
+### 인증서 생성 (최초 1회)
+
+```sh
+./Scripts/gen_cert.sh
+```
+
+openssl로 자체 서명 인증서를 생성하여 `CameraWebServer/default_cert.h`에 저장합니다.  
+이 파일은 `.gitignore`에 포함되어 있으므로 클론 후 반드시 실행하세요.
+
+> CI(GitHub Actions)는 빌드 전 자동으로 실행합니다.
+
+### 포트 구성
+
+| 포트 | 프로토콜 | 용도 |
+|---|---|---|
+| 443 | HTTPS | 웹 UI, REST API, 인증서 관리 |
+| 81 | HTTP | MJPEG 스트리밍 + InhaIno 엔드포인트 |
+
+### 브라우저 접속
+
+자체 서명 인증서이므로 첫 접속 시 브라우저 경고가 표시됩니다.  
+**"고급 → 계속 진행"** 을 선택해 접속합니다.
+
+---
+
+## OTA 펌웨어 업데이트
+
+펌웨어를 USB 연결 없이 Wi-Fi로 업데이트합니다.
+
+```
+https://192.168.x.x/update
+```
+
+**curl 예시**
+
+```sh
+curl -k -u admin:changeme \
+  -X POST --data-binary @firmware.bin \
+  -H "Content-Type: application/octet-stream" \
+  https://192.168.x.x/update
+```
+
+> Arduino IDE에서 `.bin` 파일 생성: `Sketch → Export Compiled Binary`
+
+---
+
+## 자격증명 관리
+
+| 파일 | git 추적 | 용도 |
+|---|:---:|---|
+| `CameraWebServer/secrets.h` | 최초 1회 | 실제 Wi-Fi · MQTT · 서버 설정 |
+| `CameraWebServer/secrets.h.example` | 항상 | 팀원용 템플릿 |
+
+초기 커밋 이후 로컬 변경사항이 추적되지 않으려면 아래 명령어를 실행하세요.
+
+```sh
+git update-index --skip-worktree CameraWebServer/secrets.h
+```
+
+---
+
+## mDNS
+
+Wi-Fi 연결 후 아래 주소로 IP 없이 접속할 수 있습니다.
+
+```
+https://esp32cam-1.local/
+```
+
+`MQTT_CLIENT_ID`가 mDNS 호스트명으로 사용됩니다. 같은 네트워크의 macOS · Linux · Windows 10 이상에서 동작합니다.
+
+---
+
+## 라이선스
 
 MIT
