@@ -22,9 +22,18 @@ void setupLedFlash();
 // ===========================
 // MQTT
 // ===========================
-#define MQTT_TOPIC_CMD    "cam/" MQTT_CLIENT_ID "/cmd"
-#define MQTT_TOPIC_STATUS "cam/" MQTT_CLIENT_ID "/status"
-#define MQTT_TOPIC_ONLINE "cam/" MQTT_CLIENT_ID "/online"
+#define MQTT_TOPIC_CMD        "cam/" MQTT_CLIENT_ID "/cmd"
+#define MQTT_TOPIC_STATUS     "cam/" MQTT_CLIENT_ID "/status"
+#define MQTT_TOPIC_ONLINE     "cam/" MQTT_CLIENT_ID "/online"
+#define INHAINO_TOPIC_CAPTURE "gate/" MQTT_CLIENT_ID "/capture"
+
+// ── InhaIno 서버 기본값 (secrets.h에서 재정의 가능) ─────────────────
+#ifndef INHAINO_SERVER_IP
+#define INHAINO_SERVER_IP   "192.168.1.100"
+#endif
+#ifndef INHAINO_SERVER_PORT
+#define INHAINO_SERVER_PORT 58080
+#endif
 
 #if MQTT_TLS
 static WiFiClientSecure mqttNet;
@@ -50,7 +59,87 @@ static void mqtt_publish_status() {
   mqtt.publish(MQTT_TOPIC_STATUS, buf, true);
 }
 
+// ── InhaIno: 등록 모드 촬영 후 서버 /register/stage-image 로 POST ────
+static void inhaino_post_stage_image(const char *card_id) {
+  // 스테일 프레임 플러시
+  camera_fb_t *flush = esp_camera_fb_get();
+  if (flush) esp_camera_fb_return(flush);
+
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("InhaIno: camera capture failed");
+    return;
+  }
+
+  if (fb->format != PIXFORMAT_JPEG) {
+    Serial.println("InhaIno: unexpected pixel format");
+    esp_camera_fb_return(fb);
+    return;
+  }
+
+  const char *boundary = "InhainoBoundary";
+
+  char card_part[192];
+  snprintf(card_part, sizeof(card_part),
+    "--%s\r\n"
+    "Content-Disposition: form-data; name=\"card_id\"\r\n\r\n"
+    "%s\r\n",
+    boundary, card_id);
+
+  char img_hdr[192];
+  snprintf(img_hdr, sizeof(img_hdr),
+    "--%s\r\n"
+    "Content-Disposition: form-data; name=\"image\"; filename=\"cap.jpg\"\r\n"
+    "Content-Type: image/jpeg\r\n\r\n",
+    boundary);
+
+  char closing[48];
+  snprintf(closing, sizeof(closing), "\r\n--%s--\r\n", boundary);
+
+  size_t body_len = strlen(card_part) + strlen(img_hdr) + fb->len + strlen(closing);
+
+  WiFiClient http;
+  if (!http.connect(INHAINO_SERVER_IP, INHAINO_SERVER_PORT)) {
+    Serial.println("InhaIno: server connect failed");
+    esp_camera_fb_return(fb);
+    return;
+  }
+
+  http.printf(
+    "POST /register/stage-image HTTP/1.1\r\n"
+    "Host: %s:%d\r\n"
+    "Content-Type: multipart/form-data; boundary=%s\r\n"
+    "Content-Length: %u\r\n"
+    "Connection: close\r\n\r\n",
+    INHAINO_SERVER_IP, INHAINO_SERVER_PORT, boundary, (unsigned)body_len);
+  http.print(card_part);
+  http.print(img_hdr);
+  http.write(fb->buf, fb->len);
+  http.print(closing);
+
+  esp_camera_fb_return(fb);
+
+  unsigned long deadline = millis() + 5000;
+  while (!http.available() && millis() < deadline) delay(10);
+  String status_line = http.readStringUntil('\n');
+  http.stop();
+
+  Serial.printf("InhaIno stage-image → %s\n", status_line.c_str());
+}
+
 static void mqtt_callback(char *topic, byte *payload, unsigned int len) {
+  // InhaIno: 등록 모드 촬영 명령
+  if (strcmp(topic, INHAINO_TOPIC_CAPTURE) == 0) {
+    char card_id[64] = "";
+    size_t n = len < sizeof(card_id) - 1 ? len : sizeof(card_id) - 1;
+    memcpy(card_id, payload, n);
+    card_id[n] = '\0';
+    Serial.printf("InhaIno capture cmd: card_id=%s\n", card_id);
+    inhaino_post_stage_image(card_id);
+    return;
+  }
+
+  // 기존 카메라 설정 명령
   if (len == 0 || len >= 128) return;
   char buf[128];
   memcpy(buf, payload, len);
@@ -77,6 +166,7 @@ static void mqtt_connect() {
       Serial.println(" connected");
       mqtt.publish(MQTT_TOPIC_ONLINE, "1", true);
       mqtt.subscribe(MQTT_TOPIC_CMD);
+      mqtt.subscribe(INHAINO_TOPIC_CAPTURE);
       mqtt_publish_status();
     } else {
       Serial.printf(" failed (rc=%d), retry in 5s\n", mqtt.state());

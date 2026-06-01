@@ -11,3 +11,7 @@
 #define MQTT_PASS      ""
 #define MQTT_CLIENT_ID "esp32cam-1"
 #define MQTT_TLS       0              // 1: MQTT over TLS (port 8883), 0: plain
+
+// ── InhaIno 서버 설정 ────────────────────────────────────────────────
+#define INHAINO_SERVER_IP   "192.168.1.100"
+#define INHAINO_SERVER_PORT 58080
