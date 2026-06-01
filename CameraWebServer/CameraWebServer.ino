@@ -308,7 +308,10 @@ void loop() {
   static unsigned long _lastHb = 0;
   if (millis() - _lastHb >= 30000) {
     _lastHb = millis();
-    const char *body = "{\"device_id\":\"" MQTT_CLIENT_ID "\"}";
+    char hbBody[128];
+    snprintf(hbBody, sizeof(hbBody),
+        "{\"device_id\":\"" MQTT_CLIENT_ID "\",\"ip\":\"%s\"}",
+        WiFi.localIP().toString().c_str());
     WiFiClient hb;
     if (hb.connect(INHAINO_SERVER_IP, INHAINO_SERVER_PORT)) {
       hb.printf(
@@ -319,7 +322,7 @@ void loop() {
         "Connection: close\r\n\r\n"
         "%s",
         INHAINO_SERVER_IP, INHAINO_SERVER_PORT,
-        (unsigned)strlen(body), body);
+        (unsigned)strlen(hbBody), hbBody);
       unsigned long dl = millis() + 3000;
       while (!hb.available() && millis() < dl) delay(10);
       hb.stop();
