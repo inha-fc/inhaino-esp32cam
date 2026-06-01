@@ -891,6 +891,50 @@ static esp_err_t update_upload_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+// ── InhaIno endpoints (HTTP port 81, no auth) ─────────────────────────────────
+// R4WiFi uses plain WiFiClient (no SSL), so these live on the HTTP stream server.
+//
+// Flow:
+//   R4WiFi  →  GET :81/inhaino/capture  →  {"img_url":"http://<ip>:81/inhaino/jpeg"}
+//   Server  →  GET :81/inhaino/jpeg     →  binary JPEG  →  face match
+
+static esp_err_t inhaino_jpeg_handler(httpd_req_t *req) {
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, "image/jpeg");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+  esp_err_t res;
+  if (fb->format == PIXFORMAT_JPEG) {
+    res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
+  } else {
+    jpg_chunking_t jchunk = {req, 0};
+    res = frame2jpg_cb(fb, 80, jpg_encode_stream, &jchunk) ? ESP_OK : ESP_FAIL;
+    httpd_resp_send_chunk(req, NULL, 0);
+  }
+  esp_camera_fb_return(fb);
+  log_i("InhaIno JPEG served");
+  return res;
+}
+
+static esp_err_t inhaino_capture_handler(httpd_req_t *req) {
+  // Flush one stale frame so the next capture is fresh.
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (fb) esp_camera_fb_return(fb);
+
+  char json[128];
+  snprintf(json, sizeof(json),
+           "{\"img_url\":\"http://%s:81/inhaino/jpeg\"}",
+           WiFi.localIP().toString().c_str());
+
+  log_i("InhaIno capture trigger → %s", json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+  return httpd_resp_send(req, json, strlen(json));
+}
+
 void startCameraServer() {
   // Load TLS certificate from NVS; fall back to embedded default.
   char *nvs_cert = NULL, *nvs_key = NULL;
@@ -1094,12 +1138,24 @@ void startCameraServer() {
   if (has_nvs) { free(nvs_cert); free(nvs_key); }
 
   // Stream server stays on plain HTTP (SSL overhead is too high for MJPEG).
+  httpd_uri_t inhaino_capture_uri = {
+    .uri = "/inhaino/capture", .method = HTTP_GET,
+    .handler = inhaino_capture_handler, .user_ctx = NULL
+  };
+  httpd_uri_t inhaino_jpeg_uri = {
+    .uri = "/inhaino/jpeg", .method = HTTP_GET,
+    .handler = inhaino_jpeg_handler, .user_ctx = NULL
+  };
+
   httpd_config_t stream_cfg = HTTPD_DEFAULT_CONFIG();
-  stream_cfg.server_port = 81;
-  stream_cfg.ctrl_port   = 32769;
+  stream_cfg.server_port      = 81;
+  stream_cfg.ctrl_port        = 32769;
+  stream_cfg.max_uri_handlers = 4;  // stream + inhaino_capture + inhaino_jpeg + spare
   log_i("Starting stream server on port 81 (HTTP)");
   if (httpd_start(&stream_httpd, &stream_cfg) == ESP_OK) {
     httpd_register_uri_handler(stream_httpd, &stream_uri);
+    httpd_register_uri_handler(stream_httpd, &inhaino_capture_uri);
+    httpd_register_uri_handler(stream_httpd, &inhaino_jpeg_uri);
   }
 }
 
