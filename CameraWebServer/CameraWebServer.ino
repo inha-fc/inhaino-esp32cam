@@ -303,5 +303,28 @@ void loop() {
     mqtt_connect();
   }
   mqtt.loop();
+
+  // ── 서버 하트비트 (30초 주기) ────────────────────────────────────────────
+  static unsigned long _lastHb = 0;
+  if (millis() - _lastHb >= 30000) {
+    _lastHb = millis();
+    const char *body = "{\"device_id\":\"" MQTT_CLIENT_ID "\"}";
+    WiFiClient hb;
+    if (hb.connect(INHAINO_SERVER_IP, INHAINO_SERVER_PORT)) {
+      hb.printf(
+        "POST /heartbeat HTTP/1.1\r\n"
+        "Host: %s:%d\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %u\r\n"
+        "Connection: close\r\n\r\n"
+        "%s",
+        INHAINO_SERVER_IP, INHAINO_SERVER_PORT,
+        (unsigned)strlen(body), body);
+      unsigned long dl = millis() + 3000;
+      while (!hb.available() && millis() < dl) delay(10);
+      hb.stop();
+    }
+  }
+
   delay(10);
 }
